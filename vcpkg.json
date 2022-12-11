@@ -1,0 +1,21 @@
+{
+  "name": "wbscrp",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "cpr",
+    "re2",
+    "catch2",
+    "fmt"
+  ],
+  "overrides": [
+    {
+      "name": "cpr",
+      "version": "1.8.3"
+    },
+    {
+      "name": "catch2",
+      "version": "3.1.1#2"
+    }
+  ],
+  "builtin-baseline": "cf1fda5443f2acfa976d5bda70c50fa22c26fe80"
+}
