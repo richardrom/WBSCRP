@@ -6,19 +6,38 @@ SET(CMAKE_CXX_STANDARD_REQUIRED ON)
 FIND_PACKAGE(Catch2 CONFIG REQUIRED)
 FIND_PACKAGE(fmt CONFIG REQUIRED)
 
+SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fno-limit-debug-info")
+
 SET(SOURCE_FILES
         main.cpp
-        tests.cpp)
+        pool_tests.cpp
+        scrp_tests.cpp)
+
 
 SET(MPOOL_TEST tests)
+
+ADD_COMPILE_OPTIONS(-fno-limit-debug-info)
+
 ADD_EXECUTABLE(${MPOOL_TEST} ${SOURCE_FILES})
 
+TARGET_INCLUDE_DIRECTORIES(${MPOOL_TEST} PRIVATE ../pool/include)
+TARGET_INCLUDE_DIRECTORIES(${MPOOL_TEST} PRIVATE ../scrapper/include)
+
+TARGET_LINK_LIBRARIES(${MPOOL_TEST} PRIVATE ${CMAKE_BINARY_DIR}/lib/libwbscrp.a)
 TARGET_LINK_LIBRARIES(${MPOOL_TEST} PRIVATE Catch2::Catch2WithMain)
 TARGET_LINK_LIBRARIES(${MPOOL_TEST} PRIVATE fmt::fmt)
 
-SET(COMPILER_OPTIONS "-Weverything -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-padded -Wno-reserved-identifier -Wno-poison-system-directories")
+IF (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 
-SET_SOURCE_FILES_PROPERTIES(
-        ${SOURCE_FILES}
-        PROPERTIES
-        COMPILE_FLAGS "${COMPILER_OPTIONS}")
+    SET(WARN_COMPILER_OPTIONS "-Weverything -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-padded -Wno-reserved-identifier -Wno-poison-system-directories")
+
+    SET(OTHER_COMPILER_OPTIONS "")
+
+    SET(COMPILER_OPTIONS "${WARN_COMPILER_OPTIONS}  ${OTHER_COMPILER_OPTIONS}")
+
+
+    SET_SOURCE_FILES_PROPERTIES(
+            ${INCLUDE_FILES}
+            PROPERTIES
+            COMPILE_FLAGS "${COMPILER_OPTIONS}")
+ENDIF ()
