@@ -10,12 +10,12 @@
 #error "C++ compiler needed"
 #endif /*__cplusplus*/
 
-#ifndef MEMPOOL_FIXPOOL_HPP
-#define MEMPOOL_FIXPOOL_HPP
+#ifndef MEMPOOL_FIXPOOL_BLOCK_HPP
+#define MEMPOOL_FIXPOOL_BLOCK_HPP
 
+#include <bit>
 #include <cstdint>
 #include <memory>
-
 #if defined(__APPLE__)
 #include <unistd.h>
 #elif defined(__linux__) || defined(__MINGW32__)
@@ -25,10 +25,7 @@
 #include <windows.h>
 #endif /**/
 
-#if defined CHECK_MEMORY_LEAK || defined (REPORT_ALLOCATIONS)
-#include <iomanip>
-#include <iostream>
-#endif /*CHECK_MEMORY_LEAK*/
+#include "pool_concept.hpp"
 
 #if __cplusplus >= 201603L
 #define MP_NODISCARD [[nodiscard]]
@@ -38,31 +35,26 @@
 
 namespace pool
 {
-#ifndef REPORT_ALLOCATIONS_DEFS
-#define REPORT_ALLOCATIONS_DEFS
-#if defined (REPORT_ALLOCATIONS) && defined (REPORT_ALLOCATIONS_ANSI_COLOR)
-    static const char *_reset_text_color  = "\033[0m";
-    static const char *_alloc_block_color = "\033[38;5;77m";
-    static const char *_free_block_color  = "\033[38;5;125m";
-    static const char *_alloc_chunk_color = "\033[38;5;79m";
-    static const char *_free_chunk_color  = "\033[38;5;127m";
-#endif /*REPORT_ALLOCATIONS REPORT_ALLOCATIONS_ANSI_COLOR */
-#endif /*REPORT_ALLOCATIONS_DEFS*/
 
-    template <typename T, size_t blockSize>
-    struct fixed_memory_pool
+#if defined(REPORT_ALLOCATIONS) || defined(CHECK_MEMORY_LEAK)
+    template <typename T, pool_reporter P>
+#else
+    template <typename T>
+#endif /*REPORT_ALLOCATIONS*/
+    struct memory_pool
     {
     private:
         struct block final
         {
-            explicit block(size_t chunk)
+            explicit block(size_t blockSize, size_t chunk) :
+                available_space { blockSize },
+                available_chunks { blockSize / chunk }
             {
-                available_chunks = blockSize / chunk;
             }
 
             void *_block { nullptr };
-            size_t block_size { blockSize };
-            size_t available_space { blockSize };
+
+            size_t available_space { 0 };
             size_t used_space { 0ull };
             size_t available_chunks { 0 };
             size_t used_chunks { 0ull };
@@ -79,88 +71,37 @@ namespace pool
             // Double linked list
             block *next_block { nullptr };
             block *previous_block { nullptr };
-        } * first_block;
+        } *first_block;
 
     public:
-        explicit fixed_memory_pool(size_t chunk) :
+        explicit memory_pool(size_t blockSize, size_t chunk) :
+            block_size { blockSize },
             chunk_size { chunk }
         {
+
             if (blockSize % chunk_size)
                 throw std::runtime_error("chunk size must fit in the block size");
             if (!(chunk_size >= sizeof(void *)))
                 throw std::runtime_error("chunk size must be at least the size of void *");
 
-#if defined(__APPLE__)
-            block_alignment = static_cast<size_t>(sysconf(_SC_PAGESIZE));
-#elif defined(__linux__) || defined(__MINGW32__)
-            block_alignment = static_cast<size_t>(sysconf(_SC_PAGESIZE));
-#elif defined(WIN32)
-            SYSTEM_INFO sysInfo;
-            GetSystemInfo(&sysInfo);
-            block_alignment = static_cast<size_t>(sysInfo.dwPageSize);
-#endif /**/
-            if (block_alignment == 0)
-            {
-                block_alignment_default = true;
-                block_alignment         = 4096;
-            }
-
-            if (blockSize % block_alignment)
-                throw std::runtime_error("block size must be multiple of the system minimum page size");
-
             allocate_block(&first_block, nullptr);
         }
-        ~fixed_memory_pool()
+
+        ~memory_pool()
         {
             block *next = first_block;
             while (next != nullptr)
             {
                 block *currentBlock = next;
 
-#ifdef CHECK_MEMORY_LEAK
+#if defined CHECK_MEMORY_LEAK || defined(REPORT_ALLOCATIONS)
                 if (currentBlock->used_chunks > 0)
                 {
-                    std::cout << "MEMORY LEAK DETECTED:\n";
-                    std::cout << std::setfill(' ') << std::right << std::setw(12) << "chunks: " << std::setw(8) << currentBlock->used_chunks
-                              << " of " << currentBlock->available_chunks + currentBlock->used_chunks << "\n";
-                    std::cout << std::right << std::setw(12) << "size: " << std::setw(8) << currentBlock->used_space
-                              << " of " << currentBlock->available_space + currentBlock->used_space << "\n";
-                    std::cout << "MEMORY DUMP:\n";
-
+                    std::vector<std::pair<uint64_t *, uint64_t *>> pv;
                     auto freeList = dump_free_list(reinterpret_cast<T *>(currentBlock->block_beginning));
-
-                    for (auto i = 0ull; i < currentBlock->available_chunks + currentBlock->used_chunks; ++i)
-                    {
-                        T *current = reinterpret_cast<T *>(currentBlock->block_beginning + (i * chunk_size));
-
-                        auto iterFind = std::find_if(freeList.begin(), freeList.end(),
-                            [&current](const std::pair<T *, T *> &p) {
-                                if (current == p.first)
-                                    return true;
-                                return false;
-                            });
-
-                        if (iterFind == freeList.end())
-                        {
-                            std::cout << std::setfill(' ') << std::right << std::setw(24) << "*0x" << std::hex << std::uppercase << reinterpret_cast<std::size_t>(current) << ": ";
-                            for (std::size_t j = 0; j < 8; ++j)
-                            {
-                                const auto *_toArray = reinterpret_cast<uint8_t *>(current);
-                                std::cout << std::setfill('0') << std::setw(2) << std::hex << static_cast<int64_t>(_toArray[j]) << " ";
-                            }
-
-                            for (std::size_t j = 0; j < 8; ++j)
-                            {
-                                const auto *_toArray = reinterpret_cast<char *>(current);
-                                if(isalpha( static_cast<int>(_toArray[j])))
-                                    std::cout << std::hex << _toArray[j];
-                                else
-                                    std::cout << ".";
-                            }
-
-                            std::cout << "\n";
-                        }
-                    }
+                    for (const auto &[p0, p1] : freeList)
+                        pv.template emplace_back(reinterpret_cast<uint64_t *>(p0), reinterpret_cast<uint64_t *>(p1));
+                    reporter.check_memory_leaks(currentBlock->block_beginning, pv, currentBlock->available_chunks, currentBlock->used_chunks, currentBlock->available_space, currentBlock->used_space, chunk_size);
                 }
 #endif /*CHECK_MEMORY_LEAK*/
 
@@ -173,27 +114,26 @@ namespace pool
     protected:
         void allocate_block(block **pBlock, block *previous)
         {
-            *pBlock           = new block(chunk_size); // Call the block constructor to initialize all the internal variables
-            (*pBlock)->_block = std::aligned_alloc(block_alignment, blockSize);
+            *pBlock = new block(block_size, chunk_size); // Call the block constructor to initialize all the internal variables
 
+            if (*pBlock == nullptr)
+                throw std::runtime_error("block info: out of memory");
+
+            (*pBlock)->_block = std::aligned_alloc(chunk_size, block_size);
+
+            if ((*pBlock)->_block == nullptr)
+                throw std::runtime_error("block: out of memory");
 
 #ifdef REPORT_ALLOCATIONS
-            std::cout <<
-#ifdef REPORT_ALLOCATIONS_ANSI_COLOR
-                _alloc_block_color <<
-#endif /*REPORT_ALLOCATIONS_ANSI_COLOR*/
-                "New block allocated. Block size: " << blockSize << " bytes; (Base Address: 0x" << std::hex << std::uppercase << reinterpret_cast<std::size_t>(*pBlock) << std::dec << "); Chunk size: " << chunk_size <<
-#ifdef REPORT_ALLOCATIONS_ANSI_COLOR
-                _reset_text_color <<
-#endif /*REPORT_ALLOCATIONS_ANSI_COLOR*/
-                "\n";
+            reporter.allocate_block(*pBlock, block_size, chunk_size);
 #endif /*REPORT_ALLOCATIONS*/
-            memset((*pBlock)->_block, 0, blockSize);
+
+            memset((*pBlock)->_block, 0, block_size);
 
             // Init the free list
             (*pBlock)->next_free_chunk = static_cast<size_t *>((*pBlock)->_block);
             (*pBlock)->block_beginning = static_cast<uint8_t *>((*pBlock)->_block);
-            (*pBlock)->block_end       = (*pBlock)->block_beginning + blockSize;
+            (*pBlock)->block_end       = (*pBlock)->block_beginning + block_size;
             (*pBlock)->previous_block  = previous;
 
 #ifdef _DEBUG
@@ -206,6 +146,14 @@ namespace pool
 
             for (size_t n = 0; n < (*pBlock)->available_chunks; ++n)
             {
+
+#ifdef CHECK_MEMORY_ALIGNMENT
+                if (reinterpret_cast<uint64_t>(currentChunk) % sizeof(void *))
+                    throw std::runtime_error("block not aligned"); // Check the free-list alignment
+                if (reinterpret_cast<uint64_t>(currentChunk) % chunk_size)
+                    throw std::runtime_error("block not aligned"); // Check the chunk-size alignment
+
+#endif
                 // Write the addresses of the available blocks which will point to the next chunk
                 if (n == ((*pBlock)->available_chunks - 1))
                 {
@@ -239,19 +187,9 @@ namespace pool
             _free(pBlock->_block);
             _free(pBlock);
 
-
 #ifdef REPORT_ALLOCATIONS
-            std::cout <<
-#ifdef REPORT_ALLOCATIONS_ANSI_COLOR
-                _free_block_color <<
-#endif /*REPORT_ALLOCATIONS_ANSI_COLOR*/
-                "Block freed. Block size: " << blockSize << " (0x" << std::hex << std::uppercase << reinterpret_cast<std::size_t>(pBlock) << std::dec <<  "); Chunk size: " << chunk_size <<
-#ifdef REPORT_ALLOCATIONS_ANSI_COLOR
-                _reset_text_color <<
-#endif /*REPORT_ALLOCATIONS_ANSI_COLOR*/
-                "\n";
-#endif /*_REPORT_ALLOCATIONS*/
-
+            reporter.deallocate_block(pBlock, block_size, chunk_size);
+#endif /*REPORT_ALLOCATIONS*/
         }
 
         block *block_from_pointer(T *ptr)
@@ -280,7 +218,10 @@ namespace pool
         auto alloc(Args &&...args) -> T *
         {
             // Just return according to get_available_chunk
-            return new (get_available_chunk()) T(std::forward<Args>(args)...);
+            if constexpr (std::is_same<void, T>::value)
+                return new (get_available_chunk()) void *;
+            else
+                return new (get_available_chunk()) T(std::forward<Args>(args)...);
         }
 
         void release(T *&ptr)
@@ -291,22 +232,6 @@ namespace pool
             // Get the block of the current chunk
             block *used_block = block_from_pointer(ptr);
 
-#ifdef REPORT_ALLOCATIONS
-            std::cout <<
-#ifdef REPORT_ALLOCATIONS_ANSI_COLOR
-                _free_chunk_color <<
-#endif /*REPORT_ALLOCATIONS_ANSI_COLOR*/
-                "Chunk free in block (0x" << std::hex << std::uppercase << reinterpret_cast<std::size_t>(used_block) << std::dec << "): (" << chunk_size << ") : 0x"
-                      << std::hex << std::uppercase << reinterpret_cast<std::size_t>(ptr) << std::dec << "; Free space: " << used_block->available_space <<
-                " bytes (" << used_block->available_chunks << " chunks); Used space: " << used_block->used_space << " bytes (" << used_block->used_chunks <<
-                " chunks);" <<
-#ifdef REPORT_ALLOCATIONS_ANSI_COLOR
-                _reset_text_color <<
-#endif /*REPORT_ALLOCATIONS_ANSI_COLOR*/
-                "\n";
-#endif /*REPORT_ALLOCATIONS*/
-
-
             // Update chunks
             --used_block->used_chunks;
             ++used_block->available_chunks;
@@ -314,6 +239,10 @@ namespace pool
             // Update size
             used_block->available_space += chunk_size;
             used_block->used_space -= chunk_size;
+
+#ifdef REPORT_ALLOCATIONS
+            reporter.dealloc_report(used_block, ptr, chunk_size, used_block->available_space, used_block->available_chunks, used_block->used_space, used_block->used_chunks);
+#endif /*REPORT_ALLOCATIONS*/
 
             if (used_block->used_chunks == 0)
             {
@@ -350,7 +279,7 @@ namespace pool
                 if (releaseUsedBlock)
                 {
                     // Call the destructor before freeing the block
-                    if constexpr ( std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value )
+                    if constexpr (std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
                         ptr->~T();
 
                     // Do not free the block, we might scramble the available address
@@ -372,14 +301,15 @@ namespace pool
                 *used_block->next_free_chunk = 0;
 
                 // Call the destructor
-                if constexpr ( std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value )
+                if constexpr (std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
                     ptr->~T();
                 ptr = nullptr;
 
                 return; // We don't need the next code
             }
 
-            if constexpr ( std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value )
+            // Call the destructor
+            if constexpr (std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
                 ptr->~T();
 
             // In this situation we must point used_block->next_free_chunk to ptr
@@ -397,24 +327,12 @@ namespace pool
             used_block->next_free_chunk = freed;
 
             // Once freed set the pointer to nullptr
-            // Call the destructor
-
             ptr = nullptr;
         }
 
         MP_NODISCARD auto get_chunk_size() const noexcept -> size_t
         {
             return chunk_size;
-        }
-
-        MP_NODISCARD auto get_block_alignment() const noexcept -> size_t
-        {
-            return block_alignment;
-        }
-
-        MP_NODISCARD auto was_block_alignment_defaulted() const noexcept -> bool
-        {
-            return block_alignment_default;
         }
 
         MP_NODISCARD auto block_count() const noexcept -> size_t
@@ -533,38 +451,23 @@ namespace pool
             // Update current_block->next_free_chunk, so it points to the next available address, which is: *current_block->next_free_chunk
             current_block->next_free_chunk = reinterpret_cast<size_t *>(*available);
 
-
 #ifdef REPORT_ALLOCATIONS
-            std::cout <<
-#ifdef REPORT_ALLOCATIONS_ANSI_COLOR
-                _alloc_chunk_color <<
-#endif /*REPORT_ALLOCATIONS_ANSI_COLOR*/
-                "New allocation in block (0x" << std::hex << std::uppercase << reinterpret_cast<std::size_t>(current_block) << std::dec << "): (" << chunk_size << ") : 0x"
-                      << std::hex << std::uppercase << reinterpret_cast<std::size_t>(available) << std::dec << "; Free space: " << current_block->available_space <<
-                " bytes (" << current_block->available_chunks << " chunks); Used space: " << current_block->used_space << " bytes (" << current_block->used_chunks <<
-                " chunks);" <<
-#ifdef REPORT_ALLOCATIONS_ANSI_COLOR
-                _reset_text_color <<
-#endif /*REPORT_ALLOCATIONS_ANSI_COLOR*/
-                "\n";
+            reporter.alloc_report(current_block, available, chunk_size, current_block->available_space, current_block->available_chunks, current_block->used_space, current_block->used_chunks);
 #endif /*REPORT_ALLOCATIONS*/
-
-
 
             // Return the available address
             return reinterpret_cast<T *>(available);
         }
 
     private:
+        size_t block_size { 0 };
         size_t chunk_size { 0 };
-        size_t block_alignment { 0 };
-        bool block_alignment_default { false };
-    };
 
-    // Fast benchmarks shows that is at least 9x times faster than traditional new method for at least 100'000 objects
-    // and at least 6x faster for at least 100 objects, however, if the block size is too small and blocks need to be created
-    // and freed frequently the times are just 2x faster
+#if defined(REPORT_ALLOCATIONS) || defined(CHECK_MEMORY_LEAK)
+        P reporter;
+#endif /*REPORT_ALLOCATIONS*/
+    };
 
 } // namespace pool
 
-#endif // MEMPOOL_FIXPOOL_HPP
+#endif // MEMPOOL_FIXPOOL_BLOCK_HPP

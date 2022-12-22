@@ -1,15 +1,22 @@
 /////////////////////////////////////////////////////////////////////////////////////
 //
-// Created by Ricardo Romero on 10/12/22.
+// Created by Ricardo Romero on 08/11/22.
 // Copyright (c) 2022 Ricardo Romero.  All rights reserved.
 //
 
+
+
+#include "../pool/include/allocator.hpp"
+#include "../pool/include/pool_concept.hpp"
+#include "../pool/include/pool_reporter.hpp"
 #include "../pool/include/fixpool.hpp"
 #include <catch2/benchmark/catch_benchmark_all.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <fmt/core.h>
 #include <iostream>
 #include <random>
+#include <vector>
 
 
 TEST_CASE("Initialize Memory pool", "[initialize]")
@@ -49,7 +56,7 @@ TEST_CASE("Memory free inside block")
     using namespace Catch::Matchers;
     pool::fixed_memory_pool<int, 4096> pool(8);
     int *i0 = new int;
-    CHECK_THROWS_WITH(pool.release(&i0), ContainsSubstring("does not belong"));
+    CHECK_THROWS_WITH(pool.release(i0), ContainsSubstring("does not belong"));
     delete i0;
 }
 
@@ -64,7 +71,7 @@ TEST_CASE("Memory data integrity and release")
     int *i1 = i0;
     CHECK(*i1 == 0x6989aabb);
 
-    CHECK_NOTHROW(pool.release(&i0));
+    CHECK_NOTHROW(pool.release(i0));
     CHECK(i0 == nullptr);
 }
 
@@ -104,8 +111,8 @@ TEST_CASE("Arguments passed to object via alloc")
     REQUIRE(a1->_i2 == 0x123320ull);
     REQUIRE(a1->_s == "test second string");
 
-    CHECK_NOTHROW(pool.release(&a0));
-    CHECK_NOTHROW(pool.release(&a1));
+    CHECK_NOTHROW(pool.release(a0));
+    CHECK_NOTHROW(pool.release(a1));
     CHECK(a0 == nullptr);
     CHECK(a1 == nullptr);
 }
@@ -134,19 +141,23 @@ TEST_CASE("Check block count and value integrity across multiple allocations and
     {
         auto iter     = addressMap.begin();
         auto *pointer = iter->first;
-        CHECK_NOTHROW(pool.release(&pointer));
+        CHECK_NOTHROW(pool.release(pointer));
         addressMap.erase(addressMap.begin());
     }
     REQUIRE(pool.block_count() == 3);
 
-    for (const auto &[p, v] : addressMap)
+    for (auto &[p, v] : addressMap)
     {
         // CHECK THAT VALUES HAVE NOT BEEN OVERWRITTEN
         REQUIRE(*p == v);
+
+        auto key = p;
+
+        pool.release(key);
     }
 }
 
-TEST_CASE("Information integrity")
+TEST_CASE("Information integrity", "[integrity]")
 {
     pool::fixed_memory_pool<uint64_t, 4096> pool(8);
 
@@ -156,9 +167,11 @@ TEST_CASE("Information integrity")
     auto avai_chunks = 512ull;
     auto used_chunks = 0ull;
 
+    std::vector<uint64_t *> p64;
     for (uint64_t a = 0; a < 512; ++a)
     {
         uint64_t *ptr = pool.alloc(a);
+        p64.emplace_back(ptr);
         CHECK(*ptr == a);
 
         avai_space -= 8;
@@ -173,6 +186,9 @@ TEST_CASE("Information integrity")
         CHECK(pool.used_space_in_block(ptr) == used_space);
     }
     REQUIRE(pool.block_count() == 1);
+
+    for (auto &p : p64)
+        pool.release(p);
 }
 
 TEST_CASE("Free list integrity")
@@ -207,15 +223,20 @@ TEST_CASE("Free list integrity")
     SECTION("Sequential allocation")
     {
         // Allocate
+        std::vector<uint8_t *> p8;
         for (size_t i = 0; i < elements; ++i)
         {
             // The allocator allocates sequentially not randomly so these check is valid
             auto *p = pool.alloc();
+            p8.emplace_back(p);
             REQUIRE(p == addresses[i]);
         }
 
         freeList = pool.dump_free_list(addresses[0]);
         REQUIRE(freeList.empty());
+
+        for (auto &p : p8)
+            pool.release(p);
     }
 
     std::random_device rd;
@@ -224,10 +245,12 @@ TEST_CASE("Free list integrity")
 
     SECTION("Free list integrity. one-element released")
     {
+        std::vector<uint8_t *> p8;
         for (size_t i = 0; i < elements; ++i)
         {
-            // The allocator allocates sequentially not randomly so these check is valid
-            [[maybe_unused]] auto *p = pool.alloc();
+            // The allocator allocates sequentially not randomly so this check is valid
+            auto *p = pool.alloc();
+            p8.emplace_back(p);
         }
 
         for (int i = 0; i < 1024; ++i)
@@ -239,7 +262,7 @@ TEST_CASE("Free list integrity")
 
             auto *prevRelease  = addresses[delIndex];
             auto *checkAddress = prevRelease;
-            pool.release(&prevRelease);
+            pool.release(prevRelease);
 
             freeList = pool.dump_free_list(addresses[0]);
 
@@ -251,6 +274,9 @@ TEST_CASE("Free list integrity")
             // Reallocate so the pool can have only one chunk available once release is called
             REQUIRE(checkAddress == pool.alloc());
         }
+
+        for (auto &p : p8)
+            pool.release(p);
     }
 
     SECTION("Integrity of the freelist with multiple releases")
@@ -272,7 +298,7 @@ TEST_CASE("Free list integrity")
             for (const auto &indexPath : path)
             {
                 auto *freePtr = addresses[indexPath];
-                pool.release(&freePtr);
+                pool.release(freePtr);
                 freeList = pool.dump_free_list(addresses[0]);
 
                 REQUIRE(freeList.size() == at);
@@ -311,33 +337,33 @@ TEST_CASE("Multiple pools")
     REQUIRE(pool.block_count() == 3);
 
     CHECK(pool.available_chunks_in_block(_1_pool0) == 0);
-    CHECK_NOTHROW(pool.release(&_2_pool0));
+    CHECK_NOTHROW(pool.release(_2_pool0));
     CHECK(pool.available_chunks_in_block(_3_pool0) == 1);
-    CHECK_NOTHROW(pool.release(&_4_pool0));
+    CHECK_NOTHROW(pool.release(_4_pool0));
     CHECK(pool.available_chunks_in_block(_3_pool0) == 2);
 
     CHECK(pool.available_chunks_in_block(_1_pool1) == 0);
-    CHECK_NOTHROW(pool.release(&_2_pool1));
+    CHECK_NOTHROW(pool.release(_2_pool1));
     CHECK(pool.available_chunks_in_block(_3_pool1) == 1);
-    CHECK_NOTHROW(pool.release(&_4_pool1));
+    CHECK_NOTHROW(pool.release(_4_pool1));
     CHECK(pool.available_chunks_in_block(_3_pool1) == 2);
 
     CHECK(pool.available_chunks_in_block(_1_pool2) == 0);
-    CHECK_NOTHROW(pool.release(&_2_pool2));
+    CHECK_NOTHROW(pool.release(_2_pool2));
     CHECK(pool.available_chunks_in_block(_3_pool2) == 1);
-    CHECK_NOTHROW(pool.release(&_4_pool2));
+    CHECK_NOTHROW(pool.release(_4_pool2));
     CHECK(pool.available_chunks_in_block(_3_pool2) == 2);
 
-    CHECK_NOTHROW(pool.release(&_1_pool2));
-    CHECK_NOTHROW(pool.release(&_3_pool2));
+    CHECK_NOTHROW(pool.release(_1_pool2));
+    CHECK_NOTHROW(pool.release(_3_pool2));
     REQUIRE(pool.block_count() == 2);
 
-    CHECK_NOTHROW(pool.release(&_1_pool1));
-    CHECK_NOTHROW(pool.release(&_3_pool1));
+    CHECK_NOTHROW(pool.release(_1_pool1));
+    CHECK_NOTHROW(pool.release(_3_pool1));
     REQUIRE(pool.block_count() == 1);
 
-    CHECK_NOTHROW(pool.release(&_1_pool0));
-    CHECK_NOTHROW(pool.release(&_3_pool0));
+    CHECK_NOTHROW(pool.release(_1_pool0));
+    CHECK_NOTHROW(pool.release(_3_pool0));
     REQUIRE(pool.block_count() == 1);
     REQUIRE(pool.available_chunks_in_block(reinterpret_cast<size_t *>(pool.block_address(nullptr))) == 4);
 }
@@ -366,7 +392,7 @@ TEST_CASE("Benchmarking")
             }
             for (auto &p : poolObject)
             {
-                pool.release(&p);
+                pool.release(p);
             }
         });
     };
@@ -391,4 +417,99 @@ TEST_CASE("Benchmarking")
             }
         });
     };
+}
+
+
+#if defined REPORT_ALLOCATIONS && defined CHECK_MEMORY_LEAK
+template<typename T>
+using pool_iostream_reporter = pool::pool_allocator<T, pool::allocator_iostream_reporter, pool::pool_iostream_reporter>;
+#elif !defined (REPORT_ALLOCATIONS) && defined CHECK_MEMORY_LEAK
+template<typename T>
+using pool_iostream_reporter = pool::pool_allocator<T, pool::pool_iostream_reporter>;
+#else
+template<typename T>
+using pool_iostream_reporter = pool::pool_allocator<T>;
+#endif /*REPORT_ALLOCATIONS*/
+
+
+TEST_CASE("String allocator")
+{
+
+    std::basic_string<char, std::char_traits<char>, pool_iostream_reporter<char>> string_prevent;
+
+    BENCHMARK_ADVANCED("String allocator benchmark")
+    (Catch::Benchmark::Chronometer meter)
+    {
+
+        meter.measure([&] {
+            std::basic_string<char, std::char_traits<char>, pool_iostream_reporter<char>> string0;
+            string0 = "string0 string0 string0";
+            string0 = "string0 string0 string0 string0 string0 string0 string0 string0 string0";
+            std::basic_string<char, std::char_traits<char>, pool_iostream_reporter<char>> string1;
+            string1 = "string1 string1 string1";
+            string1 = "string1 string1 string1 string1 string1 string1 string1 string1 string1";
+            std::basic_string<char, std::char_traits<char>, pool_iostream_reporter<char>> string2;
+            string2 = "string2 string2 string2";
+            string2 = "string2 string2 string2 string2 string2 string2 string2 string2 string2";
+            std::basic_string<char, std::char_traits<char>, pool_iostream_reporter<char>> string3;
+            string3 = "string3 string3 string3";
+            string3 = "string3 string3 string3 string3 string3 string3 string3 string3 string3";
+        });
+    };
+
+    BENCHMARK_ADVANCED("String default allocator benchmark")
+    (Catch::Benchmark::Chronometer meter)
+    {
+        meter.measure([&] {
+            std::string string0;
+            string0 = "string0 string0 string0";
+            string0 = "string0 string0 string0 string0 string0 string0 string0 string0 string0";
+            std::string string1;
+            string1 = "string1 string1 string1";
+            string1 = "string1 string1 string1 string1 string1 string1 string1 string1 string1";
+            std::string string2;
+            string2 = "string2 string2 string2";
+            string2 = "string2 string2 string2 string2 string2 string2 string2 string2 string2";
+            std::string string3;
+            string3 = "string3 string3 string3";
+            string3 = "string3 string3 string3 string3 string3 string3 string3 string3 string3";
+        });
+    };
+}
+
+TEST_CASE("Allocator vector")
+{
+    using wbstring = std::basic_string<char, std::char_traits<char>, pool_iostream_reporter<char>>;
+    std::vector<wbstring, pool_iostream_reporter<wbstring>> sv;
+    std::vector<uint32_t, pool_iostream_reporter<uint32_t>> u32v;
+    std::vector<uint64_t, pool_iostream_reporter<uint64_t>> u64v;
+
+    sv.emplace_back("string0 string0 string0");
+    sv.emplace_back("string1 string1 string1");
+    sv.emplace_back("string2 string2 string2");
+    sv.emplace_back("string3 string3 string3");
+    sv.emplace_back("string4 string4 string4");
+
+    u32v.push_back(0xddffbbccu);
+    u32v.push_back(0xaaffbbccu);
+    u32v.push_back(0xbbffbbccu);
+
+    u64v.push_back(0xddffbbccddffbbccull);
+    u64v.push_back(0xaaffbbccddffbbccull);
+    u64v.push_back(0xbbffbbccddffbbccull);
+
+    CHECK(sv[0] == "string0 string0 string0");
+    CHECK(sv[1] == "string1 string1 string1");
+    CHECK(sv[2] == "string2 string2 string2");
+    CHECK(sv[3] == "string3 string3 string3");
+    CHECK(sv[4] == "string4 string4 string4");
+
+
+    CHECK(u32v[0] == 0xddffbbccu);
+    CHECK(u32v[1] == 0xaaffbbccu);
+    CHECK(u32v[2] == 0xbbffbbccu);
+
+    CHECK(u64v[0] == 0xddffbbccddffbbccull);
+    CHECK(u64v[1] == 0xaaffbbccddffbbccull);
+    CHECK(u64v[2] == 0xbbffbbccddffbbccull);
 }
