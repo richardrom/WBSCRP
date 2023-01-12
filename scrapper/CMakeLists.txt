@@ -17,12 +17,16 @@ SET(INCLUDE_FILES
         include/tokenizer.hpp
         include/scrapper.hpp
         include/parser.hpp
-        include/parser_error.hpp)
+        include/parser_error.hpp
+        include/encoding.hpp
+        include/encoding_character_reference.hpp
+        include/crc64.hpp)
 
 SET(SOURCE_FILES
         src/tokenizer.cpp
         src/scrapper.cpp
-        src/parser_error.cpp)
+        src/parser_error.cpp
+        src/encoding.cpp)
 
 SET(LIBRARY_NAME wbscrp)
 
