@@ -61,6 +61,19 @@ namespace pool
         }
 #endif /*REPORT_ALLOCATIONS*/
 
+        auto create_pool(std::size_t size, std::size_t chunkSize) noexcept -> auto
+        {
+            auto find = local_blocks.find(chunkSize);
+            if (find == local_blocks.end())
+            {
+                local_blocks[chunkSize] = global_block.template alloc(size, chunkSize);
+                return local_blocks.find(chunkSize);
+            }
+
+            return find;
+        }
+
+
         auto allocate(std::size_t n) -> void *
         {
             std::unique_lock<std::mutex> lock(thread_protection);
@@ -111,17 +124,6 @@ namespace pool
             return usableSize;
         }
 
-        auto create_pool(std::size_t size, std::size_t chunkSize) noexcept -> auto
-        {
-            auto find = local_blocks.find(chunkSize);
-            if (find == local_blocks.end())
-            {
-                local_blocks[chunkSize] = global_block.template alloc(size, chunkSize);
-                return local_blocks.find(chunkSize);
-            }
-
-            return find;
-        }
 
 #ifdef REPORT_ALLOCATIONS
         MP_NODISCARD const reporter_type &reporter() const noexcept
@@ -237,7 +239,6 @@ namespace pool
                 global_allocator::_global->reporter().sub_ref_count(global_allocator::_global->count_ref);
 #endif /*REPORT_ALLOCATIONS*/
 
-                std::flush(std::cout);
 
                 if (global_allocator::_global->count_ref <= 0)
                 {
