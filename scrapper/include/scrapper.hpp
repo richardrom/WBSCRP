@@ -13,8 +13,13 @@
 #ifndef WBSCRP_SCRAPPER_HPP
 #define WBSCRP_SCRAPPER_HPP
 
+
+
+#ifndef CHREF_TOOL
 #include "allocator.hpp"
 #include "pool_reporter.hpp"
+#include <stack>
+#include <deque>
 
 namespace scrp
 {
@@ -34,10 +39,14 @@ namespace scrp
     template <typename T>
     using pool_allocator = pool::pool_allocator<T>;
 #endif /*REPORT_ALLOCATIONS*/
-    using wbstring = std::basic_string<char_type, std::char_traits<char_type>, pool_allocator<char_type>>;
+    using sc_string = std::basic_string<char_type, std::char_traits<char_type>, pool_allocator<char_type>>;
 
     template<typename T>
-    using wbvector = std::vector<T, pool_allocator<T>>;
+    using sc_vector = std::vector<T, pool_allocator<T>>;
+
+    template<typename T>
+    using sc_stack = std::stack<T, std::deque<T, pool_allocator<T>>>;
+
 
     // Call before any calls to the library
     extern bool initialize();
@@ -47,16 +56,51 @@ namespace scrp
     enum class States
     {
         Data,
+        CharacterReference,
+        NamedCharacterReference,
+        NumericCharacterReference,
+        HexadecimalCharacterReferenceStart,
+        DecimalCharacterReferenceStart,
+        HexadecimalCharacterReference,
+        DecimalCharacterReference,
+        NumericCharacterReferenceEnd,
+        AmbiguousAmpersand,
         TagOpen,
+        MarkupDeclarationOpen,
+        EndTagOpen,
+        AttributeValueDoubleQuoted,
+        AttributeValueSingleQuoted,
+        AttributeValueUnquoted,
+        CommentStart,
+        CommentEnd,
+        BogusComment,
+        CommentStartDash,
+        CommentLessThanSign,
+        CommentLessThanSignBang,
+        CommentLessThanSignBangDash,
+        CommentLessThanSignBangDashDash,
+        CommentEndDash,
+        CommentEndBang,
+        Comment,
+        DOCTYPE,
+        CDATA,
     };
 
+    enum class TokenType
+    {
+        Comment,
+        EndOfFile
+    };
     struct Token
     {
-        wbstring name;
+        sc_string data;
+        TokenType type;
     };
 
 
 } // namespace scrp
+
+#endif /*CHREF_TOOL*/
 
 
 #endif // WBSCRP_SCRAPPER_HPP
