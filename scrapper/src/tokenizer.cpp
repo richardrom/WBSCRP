@@ -18,14 +18,18 @@ struct scrp::Tokenizer::Impl
         data { std::move(src) }
     {
         tokens.reserve(1000);
+        attributes.reserve(20);
     }
 
 public:
     sc_stack<States> state;
     sc_vector<Token> tokens;
     sc_vector<parser_error> errors;
+    sc_unordered_map<sc_string, sc_string> attributes;
     sc_string data;
     sc_string current_token_data;
+    sc_string extra_token_data_0;
+    sc_string extra_token_data_1;
     sc_string ambiguous_character_reference;
     std::size_t current_position { 0 };
     std::size_t current_line { 1 };
@@ -132,8 +136,94 @@ auto scrp::Tokenizer::tokenize() -> bool
                     comment_end_bang(dataIterator, currentState);
                     break;
                 case States::DOCTYPE:
+                    doctype(dataIterator, currentState);
                     break;
-                case States::CDATA:
+                case States::BeforeDOCTYPEName:
+                    before_doctype_name(dataIterator, currentState);
+                    break;
+                case States::DOCTYPEName:
+                    doctype_name(dataIterator, currentState);
+                    break;
+                case States::AfterDOCTYPEName:
+                    after_doctype_name(dataIterator, currentState);
+                    break;
+                case States::AfterDOCTYPEPublicKeyword:
+                    after_doctype_public_keyword(dataIterator, currentState);
+                    break;
+                case States::BeforeDOCTYPEPublicIdentifier:
+                    before_doctype_public_identifier(dataIterator, currentState);
+                    break;
+                case States::DOCTYPEPublicIdentifierDQ:
+                    doctype_public_identifier_dq(dataIterator, currentState);
+                    break;
+                case States::DOCTYPEPublicIdentifierSQ:
+                    doctype_public_identifier_sq(dataIterator, currentState);
+                    break;
+                case States::AfterDOCTYPEPublicIdentifier:
+                    after_doctype_public_identifier(dataIterator, currentState);
+                    break;
+                case States::BetweenDOCTYPEPublicAndSystemIdentifiers:
+                    between_doctype_public_and_system_identifiers(dataIterator, currentState);
+                    break;
+                case States::AfterDOCTYPESystemKeyword:
+                    after_doctype_system_keyword(dataIterator, currentState);
+                    break;
+                case States::BeforeDOCTYPESystemIdentifier:
+                    before_doctype_system_identifier(dataIterator, currentState);
+                    break;
+                case States::DOCTYPESystemIdentifierDQ:
+                    doctype_system_identifier_dq(dataIterator, currentState);
+                    break;
+                case States::DOCTYPESystemIdentifierSQ:
+                    doctype_system_identifier_sq(dataIterator, currentState);
+                    break;
+                case States::AfterDOCTYPESystemIdentifier:
+                    after_doctype_system_identifier(dataIterator, currentState);
+                    break;
+                case States::BogusDOCTYPE:
+                    bogus_doctype(dataIterator, currentState);
+                    break;
+                case States::CDATASection:
+                    cdata_section(dataIterator, currentState);
+                    break;
+                case States::CDATASectionBracket:
+                    cdata_section_bracket(dataIterator, currentState);
+                    break;
+                case States::CDATASectionEnd:
+                    cdata_section_end(dataIterator, currentState);
+                    break;
+                case States::EndTagOpen:
+                    end_tag_open(dataIterator, currentState);
+                    break;
+                case States::TagName:
+                    tag_name(dataIterator, currentState);
+                    break;
+                case States::BeforeAttributeName:
+                    before_attribute_name(dataIterator, currentState);
+                    break;
+                case States::SelfClosingStartTag:
+                    self_closing_start_tag(dataIterator, currentState);
+                    break;
+                case States::AttributeName:
+                    attribute_name(dataIterator, currentState);
+                    break;
+                case States::AfterAttributeName:
+                    after_attribute_name(dataIterator, currentState);
+                    break;
+                case States::BeforeAttributeValue:
+                    before_attribute_value(dataIterator, currentState);
+                    break;
+                case States::AttributeValueDQ:
+                    attribute_value_dq(dataIterator, currentState);
+                    break;
+                case States::AttributeValueSQ:
+                    attribute_value_sq(dataIterator, currentState);
+                    break;
+                case States::AttributeValueUnquoted:
+                    attribute_value_unquoted(dataIterator, currentState);
+                    break;
+                case States::AfterAttributeValueQuoted:
+                    after_attribute_value_quoted(dataIterator, currentState);
                     break;
             }
 
@@ -161,12 +251,26 @@ auto scrp::Tokenizer::is_return_state_attribute() -> bool
     else
     {
         const auto &state = _impl->state.top();
-        if (state == States::AttributeValueDoubleQuoted
-            || state == States::AttributeValueSingleQuoted
+        if (state == States::AttributeValueDQ
+            || state == States::AttributeValueSQ
             || state == States::AttributeValueUnquoted)
             return true;
     }
     return false;
+}
+
+auto scrp::Tokenizer::insert_attribute(const sc_string &name, const sc_string &value) -> void
+{
+    auto iter = _impl->attributes.find(name);
+    if (iter == _impl->attributes.end())
+    {
+        _impl->attributes[name] = value;
+    }
+    else
+    {
+        emit_error(parser_error_type::duplicate_attribute);
+        // discard the new attribute
+    }
 }
 
 auto scrp::Tokenizer::is_next_char_eof(const sc_string::iterator &pos) const -> bool
@@ -326,9 +430,12 @@ auto scrp::Tokenizer::emit_error(parser_error_type type) noexcept -> void
     _impl->errors.emplace_back(type, _impl->current_position, _impl->line_offset, _impl->current_line);
 }
 
-auto scrp::Tokenizer::emit_token(Token token) noexcept -> void
+auto scrp::Tokenizer::emit_token(const Token &token) noexcept -> void
 {
     _impl->current_token_data.clear();
+    _impl->extra_token_data_0.clear();
+    _impl->extra_token_data_1.clear();
+    _impl->attributes.clear();
 }
 
 auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
@@ -345,43 +452,61 @@ auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
             [[fallthrough]];
         case States::CommentEndDash:
             emit_error(parser_error_type::eof_in_comment);
-            emit_token({ _impl->current_token_data, TokenType::Comment });
-            emit_token({ "", TokenType::EndOfFile });
+            emit_token(CommentToken { _impl->current_token_data });
+            emit_token(EOFToken {});
+            break;
+        case States::DOCTYPE:
+            [[fallthrough]];
+        case States::BeforeDOCTYPEName:
+            [[fallthrough]];
+        case States::DOCTYPEName:
+            [[fallthrough]];
+        case States::AfterDOCTYPEName:
+            [[fallthrough]];
+        case States::AfterDOCTYPEPublicKeyword:
+            [[fallthrough]];
+        case States::BeforeDOCTYPEPublicIdentifier:
+            [[fallthrough]];
+        case States::AfterDOCTYPESystemKeyword:
+            [[fallthrough]];
+        case States::BeforeDOCTYPESystemIdentifier:
+            [[fallthrough]];
+        case States::BogusDOCTYPE:
+            emit_error(parser_error_type::eof_in_doctype);
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            emit_token(EOFToken {});
             break;
     }
 }
 
 auto scrp::Tokenizer::data_state(sc_string::iterator &pos, States &stateChange) -> void
 {
-    auto currentChar = *pos;
-
-    switch (currentChar)
+    switch (*pos)
     {
-        case '<':
-            stateChange = States::TagOpen;
-            return;
         case '&':
             stateChange = States::CharacterReference;
             _impl->state.push(States::Data);
             return;
+        case '<':
+            stateChange = States::TagOpen;
+            return;
         case 0:
-            // according to the standard this is not an unrecoverable error
             emit_error(parser_error_type::unexpected_null_character);
             break;
         default:
+            emit_token(CharacterToken { sc_string { *pos } });
             break;
     }
 
     if (is_next_char_eof(pos))
     {
+        emit_token(EOFToken {});
     }
 }
 
 auto scrp::Tokenizer::tag_open_state(sc_string::iterator &pos, States &stateChange) -> void
 {
-    auto currentChar = *pos;
-
-    switch (currentChar)
+    switch (*pos)
     {
         case '!':
             stateChange = States::MarkupDeclarationOpen;
@@ -391,17 +516,31 @@ auto scrp::Tokenizer::tag_open_state(sc_string::iterator &pos, States &stateChan
             break;
         case '?':
             emit_error(parser_error_type::unexpected_question_mark_instead_of_tag_name);
-            // TODO: Create a comment token whose data is the empty string. Reconsume in the bogus comment state.
+            stateChange = States::BogusComment;
+            _impl->current_token_data.clear();
+            --pos;
             break;
         default:
-            if (scrp::Tokenizer::is_char_alpha(currentChar))
+            if (scrp::Tokenizer::is_char_alpha(*pos))
             {
+                stateChange = States::TagName;
+                --pos;
+            }
+            else
+            {
+                emit_error(parser_error_type::invalid_first_character_of_tag_name);
+                emit_token(CharacterToken { "<" });
+                stateChange = States::Data;
+                --pos;
             }
             break;
     }
 
     if (is_next_char_eof(pos))
     {
+        emit_error(parser_error_type::eof_before_tag_name);
+        emit_token(CharacterToken { ">" });
+        emit_token(EOFToken {});
     }
 }
 
@@ -704,7 +843,7 @@ auto scrp::Tokenizer::markup_declaration_open(sc_string::iterator &pos, States &
                 if (markup_name == _cdata)
                 {
                     // TODO: CHECK CDATA BOGUS COMMENT
-                    stateChange = States::CDATA;
+                    stateChange = States::CDATASection;
                     return;
                 }
             }
@@ -722,7 +861,7 @@ auto scrp::Tokenizer::bogus_comment(sc_string::iterator &pos, States &stateChang
     switch (*pos)
     {
         case '>':
-            emit_token({ _impl->current_token_data, TokenType::Comment });
+            emit_token(CommentToken { _impl->current_token_data });
             stateChange = States::Data;
             break;
         case '0':
@@ -743,7 +882,7 @@ auto scrp::Tokenizer::comment_start(sc_string::iterator &pos, scrp::States &stat
             break;
         case '>':
             emit_error(parser_error_type::abrupt_closing_of_empty_comment);
-            emit_token({ _impl->current_token_data, TokenType::Comment });
+            emit_token(CommentToken { _impl->current_token_data });
             stateChange = States::Data;
             break;
         default:
@@ -761,7 +900,7 @@ auto scrp::Tokenizer::comment_start_dash(sc_string::iterator &pos, scrp::States 
             break;
         case '>':
             emit_error(parser_error_type::abrupt_closing_of_empty_comment);
-            emit_token({ _impl->current_token_data, TokenType::Comment });
+            emit_token(CommentToken { _impl->current_token_data });
             stateChange = States::Data;
             break;
         default:
@@ -862,8 +1001,8 @@ auto scrp::Tokenizer::comment_end_dash(sc_string::iterator &pos, scrp::States &s
     {
         emit_error(parser_error_type::eof_in_comment);
         stateChange = States::Data; // Prevent the call to handle_eof_error()
-        emit_token({ _impl->current_token_data, TokenType::Comment });
-        emit_token({ "", TokenType::EndOfFile });
+        emit_token(CommentToken { _impl->current_token_data });
+        emit_token(EOFToken {});
     }
 
     switch (*pos)
@@ -883,7 +1022,7 @@ auto scrp::Tokenizer::comment_end(sc_string::iterator &pos, scrp::States &stateC
     switch (*pos)
     {
         case '>':
-            emit_token({ _impl->current_token_data, TokenType::Comment });
+            emit_token(CommentToken { _impl->current_token_data });
             stateChange = States::Data;
             break;
         case '!':
@@ -909,7 +1048,7 @@ auto scrp::Tokenizer::comment_end_bang(sc_string::iterator &pos, States &stateCh
             break;
         case '>':
             emit_error(parser_error_type::incorrectly_closed_comment);
-            emit_token({ _impl->current_token_data, TokenType::Comment });
+            emit_token(CommentToken { _impl->current_token_data });
             stateChange = States::Data;
             break;
         default:
@@ -921,4 +1060,925 @@ auto scrp::Tokenizer::comment_end_bang(sc_string::iterator &pos, States &stateCh
 
 auto scrp::Tokenizer::doctype(sc_string::iterator &pos, scrp::States &stateChange) -> void
 {
+    switch (*pos)
+    {
+        default:
+            emit_error(parser_error_type::missing_whitespace_before_doctype_name);
+            [[fallthrough]];
+        case '>':
+            --pos;
+            [[fallthrough]];
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            stateChange = States::BeforeDOCTYPEName;
+    }
+}
+
+auto scrp::Tokenizer::before_doctype_name(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // ignore
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->current_token_data += encoding::_sv_invalid;
+            stateChange = States::DOCTYPEName;
+            break;
+        case '>':
+            emit_error(parser_error_type::missing_doctype_name);
+            emit_token(DOCTYPEToken { _impl->current_token_data });
+            stateChange = States::Data;
+            break;
+        default:
+            auto ch = *pos;
+            if (is_char_upper_alpha(ch))
+                ch = to_lower(ch);
+            _impl->current_token_data += ch;
+            stateChange = States::DOCTYPEName;
+    }
+}
+
+auto scrp::Tokenizer::doctype_name(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            stateChange = States::AfterDOCTYPEName;
+            break;
+        case '>':
+            emit_token(DOCTYPEToken { _impl->current_token_data });
+            stateChange = States::Data;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->current_token_data += encoding::_sv_invalid;
+            break;
+        default:
+            _impl->current_token_data += *pos;
+    }
+}
+
+auto scrp::Tokenizer::after_doctype_name(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    static constexpr std::string_view _public { "public" };
+    static constexpr std::string_view _system { "system" };
+
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // ignore
+            break;
+        case '>':
+            emit_token(DOCTYPEToken { _impl->current_token_data });
+            stateChange = States::Data;
+            break;
+        default:
+            _impl->extra_token_data_0 += *pos;
+            if (_impl->extra_token_data_0.size() <= _public.size() && string_to_lower(_impl->extra_token_data_0) == _public.substr(0, _impl->extra_token_data_0.size()))
+            {
+                if (string_to_lower(_impl->extra_token_data_0) == _public)
+                {
+                    _impl->extra_token_data_0.clear();
+                    _impl->extra_token_data_1.clear();
+                    stateChange = States::AfterDOCTYPEPublicKeyword;
+                }
+            }
+            else if (_impl->extra_token_data_0.size() <= _system.size() && string_to_lower(_impl->extra_token_data_0) == _system.substr(0, _impl->extra_token_data_0.size()))
+            {
+                if (string_to_lower(_impl->extra_token_data_0) == _system)
+                {
+                    _impl->extra_token_data_0.clear();
+                    _impl->extra_token_data_1.clear();
+                    stateChange = States::AfterDOCTYPESystemKeyword;
+                }
+            }
+            else
+            {
+                emit_error(parser_error_type::invalid_character_sequence_after_doctype_name);
+                --pos; // Reconsume
+                stateChange = States::BogusDOCTYPE;
+            }
+            break;
+    }
+}
+
+auto scrp::Tokenizer::after_doctype_public_keyword(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            stateChange = States::BeforeDOCTYPEPublicIdentifier;
+            break;
+        case '\"':
+            emit_error(parser_error_type::missing_whitespace_after_doctype_public_keyword);
+            stateChange = States::DOCTYPEPublicIdentifierDQ;
+            break;
+        case '\'':
+            emit_error(parser_error_type::missing_whitespace_after_doctype_public_keyword);
+            stateChange = States::DOCTYPEPublicIdentifierSQ;
+            break;
+        case '>':
+            emit_error(parser_error_type::missing_doctype_public_identifier);
+            emit_token(DOCTYPEToken { _impl->current_token_data });
+            stateChange = States::Data;
+            break;
+        default:
+            emit_error(parser_error_type::missing_quote_before_doctype_public_identifier);
+            --pos;
+            stateChange = States::BogusDOCTYPE;
+    }
+}
+
+auto scrp::Tokenizer::before_doctype_public_identifier(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // Ignore
+            break;
+        case '\"':
+            stateChange = States::DOCTYPEPublicIdentifierDQ;
+            break;
+        case '\'':
+            stateChange = States::DOCTYPEPublicIdentifierSQ;
+            break;
+        case '>':
+            emit_error(parser_error_type::missing_doctype_public_identifier);
+            emit_token(DOCTYPEToken { _impl->current_token_data });
+            stateChange = States::Data;
+            break;
+        default:
+            emit_error(parser_error_type::missing_quote_before_doctype_public_identifier);
+            --pos;
+            stateChange = States::BogusDOCTYPE;
+    }
+}
+
+auto scrp::Tokenizer::doctype_public_identifier_dq(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case '\"':
+            stateChange = States::AfterDOCTYPEPublicIdentifier;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->extra_token_data_0 += encoding::_sv_invalid;
+            break;
+        case '>':
+            emit_error(parser_error_type::abrupt_doctype_public_identifier);
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+            stateChange = States::Data;
+            break;
+        default:
+            _impl->extra_token_data_0 += *pos;
+    }
+
+    if (is_next_char_eof(pos) && stateChange != States::Data)
+    {
+        emit_error(parser_error_type::eof_in_doctype);
+        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+        emit_token(EOFToken {});
+        stateChange = States::Data; // Prevent the call to handle_eof_error()
+        return;
+    }
+}
+
+auto scrp::Tokenizer::doctype_public_identifier_sq(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+
+    switch (*pos)
+    {
+        case '\'':
+            stateChange = States::AfterDOCTYPEPublicIdentifier;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->extra_token_data_0 += encoding::_sv_invalid;
+            break;
+        case '>':
+            emit_error(parser_error_type::abrupt_doctype_public_identifier);
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+            stateChange = States::Data;
+            break;
+        default:
+            _impl->extra_token_data_0 += *pos;
+    }
+
+    if (is_next_char_eof(pos) && stateChange != States::Data)
+    {
+        emit_error(parser_error_type::eof_in_doctype);
+        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+        emit_token(EOFToken {});
+        stateChange = States::Data; // Prevent the call to handle_eof_error()
+        return;
+    }
+}
+
+auto scrp::Tokenizer::after_doctype_public_identifier(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            stateChange = States::BetweenDOCTYPEPublicAndSystemIdentifiers;
+            break;
+        case '>':
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+            stateChange = States::Data;
+            break;
+        case '\"':
+            emit_error(parser_error_type::missing_whitespace_between_doctype_public_and_system_identifiers);
+            stateChange = States::DOCTYPESystemIdentifierDQ;
+            break;
+        case '\'':
+            emit_error(parser_error_type::missing_whitespace_between_doctype_public_and_system_identifiers);
+            stateChange = States::DOCTYPESystemIdentifierSQ;
+            break;
+        default:
+            emit_error(parser_error_type::missing_quote_before_doctype_system_identifier);
+            --pos;
+            stateChange = States::BogusDOCTYPE;
+    }
+
+    if (is_next_char_eof(pos) && stateChange != States::Data)
+    {
+        emit_error(parser_error_type::eof_in_doctype);
+        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+        emit_token(EOFToken {});
+        stateChange = States::Data; // Prevent the call to handle_eof_error()
+        return;
+    }
+}
+
+auto scrp::Tokenizer::between_doctype_public_and_system_identifiers(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // Ignore
+            break;
+        case '>':
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+            stateChange = States::Data;
+            break;
+        case '\"':
+            stateChange = States::DOCTYPESystemIdentifierDQ;
+            break;
+        case '\'':
+            stateChange = States::DOCTYPESystemIdentifierSQ;
+            break;
+        default:
+            emit_error(parser_error_type::missing_quote_before_doctype_system_identifier);
+            --pos;
+            stateChange = States::BogusDOCTYPE;
+    }
+
+    if (is_next_char_eof(pos) && stateChange != States::Data)
+    {
+        emit_error(parser_error_type::eof_in_doctype);
+        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+        emit_token(EOFToken {});
+        stateChange = States::Data; // Prevent the call to handle_eof_error()
+        return;
+    }
+}
+
+auto scrp::Tokenizer::after_doctype_system_keyword(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            stateChange = States::BeforeDOCTYPESystemIdentifier;
+            break;
+        case '\"':
+            emit_error(parser_error_type::missing_whitespace_after_doctype_system_keyword);
+            stateChange = States::DOCTYPESystemIdentifierDQ;
+            break;
+        case '\'':
+            emit_error(parser_error_type::missing_whitespace_after_doctype_system_keyword);
+            stateChange = States::DOCTYPESystemIdentifierSQ;
+            break;
+        case '>':
+            emit_error(parser_error_type::missing_doctype_system_identifier);
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            stateChange = States::Data;
+            break;
+        default:
+            emit_error(parser_error_type::missing_quote_before_doctype_system_identifier);
+            --pos;
+            stateChange = States::BogusDOCTYPE;
+    }
+}
+
+auto scrp::Tokenizer::before_doctype_system_identifier(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // Ignore
+            break;
+        case '\"':
+            stateChange = States::DOCTYPESystemIdentifierDQ;
+            break;
+        case '\'':
+            stateChange = States::DOCTYPESystemIdentifierSQ;
+            break;
+        case '>':
+            emit_error(parser_error_type::missing_doctype_system_identifier);
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            stateChange = States::Data;
+            break;
+        default:
+            emit_error(parser_error_type::missing_quote_before_doctype_system_identifier);
+            --pos;
+            stateChange = States::BogusDOCTYPE;
+    }
+}
+
+auto scrp::Tokenizer::doctype_system_identifier_dq(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case '\"':
+            stateChange = States::AfterDOCTYPESystemIdentifier;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            break;
+        case '>':
+            emit_error(parser_error_type::abrupt_doctype_system_identifier);
+            stateChange = States::Data;
+            break;
+        default:
+            _impl->extra_token_data_1 += *pos;
+    }
+    if (is_next_char_eof(pos) && stateChange != States::Data)
+    {
+        emit_error(parser_error_type::eof_in_doctype);
+        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+        emit_token(EOFToken {});
+        stateChange = States::Data; // Prevent the call to handle_eof_error()
+        return;
+    }
+}
+
+auto scrp::Tokenizer::doctype_system_identifier_sq(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case '\'':
+            stateChange = States::AfterDOCTYPESystemIdentifier;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            break;
+        case '>':
+            emit_error(parser_error_type::abrupt_doctype_system_identifier);
+            stateChange = States::Data;
+            break;
+        default:
+            _impl->extra_token_data_1 += *pos;
+    }
+    if (is_next_char_eof(pos) && stateChange != States::Data)
+    {
+        emit_error(parser_error_type::eof_in_doctype);
+        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+        emit_token(EOFToken {});
+        stateChange = States::Data; // Prevent the call to handle_eof_error()
+        return;
+    }
+}
+
+auto scrp::Tokenizer::after_doctype_system_identifier(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // Ignore
+            break;
+        case '>':
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            stateChange = States::Data;
+            break;
+        default:
+            emit_error(parser_error_type::unexpected_character_after_doctype_system_identifier);
+            --pos;
+            stateChange = States::BogusDOCTYPE;
+    }
+
+    if (is_next_char_eof(pos) && stateChange != States::Data)
+    {
+        emit_error(parser_error_type::eof_in_doctype);
+        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+        emit_token(EOFToken {});
+        stateChange = States::Data; // Prevent the call to handle_eof_error()
+        return;
+    }
+}
+
+auto scrp::Tokenizer::bogus_doctype(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case '>':
+            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            stateChange = States::Data;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            break;
+        default:;
+    }
+}
+
+auto scrp::Tokenizer::cdata_section(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case ']':
+            stateChange = States::CDATASectionBracket;
+            break;
+        default:
+            _impl->current_token_data += *pos;
+    }
+
+    if (is_next_char_eof(pos))
+    {
+        emit_error(parser_error_type::eof_in_cdata);
+        emit_token(CDATAToken { _impl->current_token_data });
+        return;
+    }
+}
+
+auto scrp::Tokenizer::cdata_section_bracket(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case ']':
+            stateChange = States::CDATASectionEnd;
+            break;
+        default:
+            _impl->current_token_data += ']';
+            stateChange = States::CDATASection;
+            --pos;
+    }
+}
+
+auto scrp::Tokenizer::cdata_section_end(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case ']':
+            _impl->current_token_data += ']';
+            break;
+        case '>':
+            emit_token(CDATAToken { _impl->current_token_data });
+            stateChange = States::Data;
+            break;
+        default:
+            _impl->current_token_data += "]]";
+            stateChange = States::CDATASection;
+            --pos;
+    }
+}
+
+auto scrp::Tokenizer::end_tag_open(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case '>':
+            emit_error(parser_error_type::missing_end_tag_name);
+            stateChange = States::Data;
+            break;
+        default:
+            if (is_char_alpha(*pos))
+            {
+                emit_token(EndTagToken {});
+                stateChange = States::TagName;
+                --pos;
+            }
+            else
+            {
+                emit_error(parser_error_type::invalid_first_character_of_tag_name);
+                stateChange = States::BogusComment;
+                --pos;
+            }
+    }
+
+    if (is_next_char_eof(pos))
+    {
+        emit_token(CharacterToken { "<" });
+        emit_token(CharacterToken("/"));
+        emit_token(EOFToken {});
+    }
+}
+
+auto scrp::Tokenizer::tag_name(sc_string::iterator &pos, scrp::States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            stateChange = States::BeforeAttributeName;
+            break;
+        case '/':
+            stateChange = States::SelfClosingStartTag;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->current_token_data += encoding::_sv_invalid;
+        default:
+            {
+                const auto ch = to_lower(*pos);
+                _impl->current_token_data += ch;
+            }
+    }
+
+    if (is_next_char_eof(pos))
+    {
+        emit_error(parser_error_type::eof_in_tag);
+        emit_token(EOFToken {});
+    }
+}
+
+auto scrp::Tokenizer::before_attribute_name(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // ignore
+            break;
+        case '/':
+            [[fallthrough]];
+        case '>':
+            --pos;
+            stateChange = States::AfterAttributeName;
+            break;
+        case '=':
+            emit_error(parser_error_type::unexpected_equals_sign_before_attribute_name);
+            _impl->extra_token_data_0 = *pos;
+            stateChange               = States::AttributeName;
+            break;
+        default:
+            _impl->extra_token_data_0.clear();
+            stateChange = States::AttributeName;
+    }
+
+    if (is_next_char_eof(pos))
+    {
+        --pos;
+        stateChange = States::AfterAttributeName;
+    }
+}
+
+auto scrp::Tokenizer::attribute_name(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            [[fallthrough]];
+        case '/':
+            [[fallthrough]];
+        case '>':
+            --pos;
+            stateChange = States::AfterAttributeName;
+            break;
+        case '=':
+            stateChange = States::BeforeAttributeValue;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->extra_token_data_0 += encoding::_sv_invalid;
+            break;
+        case '\"':
+            [[fallthrough]];
+        case '\'':
+            [[fallthrough]];
+        case '<':
+            emit_error(parser_error_type::unexpected_character_in_attribute_name);
+            [[fallthrough]];
+        default:
+            const auto ch = to_lower(*pos);
+            _impl->extra_token_data_0 += ch;
+    }
+
+    if (is_next_char_eof(pos))
+    {
+        --pos;
+        stateChange = States::AfterAttributeName;
+    }
+}
+
+auto scrp::Tokenizer::after_attribute_name(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // ignore
+            break;
+        case '/':
+            stateChange = States::SelfClosingStartTag;
+            break;
+        case '=':
+            stateChange = States::BeforeAttributeValue;
+            break;
+        case '>':
+            emit_token(TagToken { _impl->current_token_data, _impl->attributes });
+            stateChange = States::Data;
+            break;
+        default:
+            insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
+            _impl->extra_token_data_0.clear();
+            _impl->extra_token_data_1.clear();
+            stateChange = States::AttributeName;
+            --pos; // Reconsume
+    }
+
+    if (is_next_char_eof(pos))
+    {
+        emit_error(parser_error_type::eof_in_tag);
+        emit_token(EOFToken {});
+    }
+}
+
+auto scrp::Tokenizer::before_attribute_value(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            // ignore
+            break;
+        case '\"':
+            stateChange = States::AttributeValueDQ;
+            break;
+        case '\'':
+            stateChange = States::AttributeValueSQ;
+            break;
+        case '>':
+            emit_error(parser_error_type::missing_attribute_value);
+            emit_token(TagToken { _impl->current_token_data, _impl->attributes });
+            stateChange = States::Data;
+            break;
+        default:
+            stateChange = States::AttributeValueUnquoted;
+            --pos;
+    }
+}
+
+auto scrp::Tokenizer::attribute_value_dq(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case '\"':
+            stateChange = States::AfterAttributeValueQuoted;
+            break;
+        case '&':
+            _impl->state.push(States::AttributeValueDQ);
+            stateChange = States::CharacterReference;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            break;
+        default:
+            _impl->extra_token_data_1 += *pos;
+    }
+
+    if(is_next_char_eof(pos))
+    {
+        emit_error(parser_error_type::eof_in_tag);
+        emit_token(EOFToken{});
+    }
+}
+
+auto scrp::Tokenizer::attribute_value_sq(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case '\'':
+            stateChange = States::AfterAttributeValueQuoted;
+            break;
+        case '&':
+            _impl->state.push(States::AttributeValueSQ);
+            stateChange = States::CharacterReference;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            break;
+        default:
+            _impl->extra_token_data_1 += *pos;
+    }
+
+    if(is_next_char_eof(pos))
+    {
+        emit_error(parser_error_type::eof_in_tag);
+        emit_token(EOFToken{});
+    }
+}
+
+auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            stateChange = States::BeforeAttributeName;
+            break;
+        case '&':
+            _impl->state.push(States::AttributeValueUnquoted);
+            stateChange = States::CharacterReference;
+            break;
+        case '>':
+            insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
+            _impl->extra_token_data_0.clear();
+            _impl->extra_token_data_1.clear();
+            emit_token(TagToken { _impl->current_token_data, _impl->attributes });
+            stateChange = States::Data;
+            break;
+        case 0:
+            emit_error(parser_error_type::unexpected_null_character);
+            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            break;
+        case '\"':
+            [[fallthrough]];
+        case '\'':
+            [[fallthrough]];
+        case '<':
+            [[fallthrough]];
+        case '=':
+            [[fallthrough]];
+        case '`':
+            emit_error(parser_error_type::unexpected_character_in_unquoted_attribute_value);
+            [[fallthrough]];
+        default:
+            _impl->extra_token_data_1 += *pos;
+    }
+
+    if(is_next_char_eof(pos))
+    {
+        emit_error(parser_error_type::eof_in_tag);
+        emit_token(EOFToken{});
+    }
+}
+
+auto scrp::Tokenizer::after_attribute_value_quoted(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 0x09:
+            [[fallthrough]];
+        case 0x0A:
+            [[fallthrough]];
+        case 0x0C:
+            [[fallthrough]];
+        case 0x20:
+            stateChange = States::BeforeAttributeName;
+            break;
+        case '/':
+            stateChange = States::SelfClosingStartTag;
+            break;
+        case '>':
+            insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
+            _impl->extra_token_data_0.clear();
+            _impl->extra_token_data_1.clear();
+            emit_token(TagToken { _impl->current_token_data, _impl->attributes });
+            stateChange = States::Data;
+            break;
+        default:
+            emit_error(parser_error_type::missing_whitespace_between_attributes);
+            stateChange = States::BeforeAttributeName;
+            --pos;
+
+    }
+
+    if(is_next_char_eof(pos))
+    {
+        emit_error(parser_error_type::eof_in_tag);
+        emit_token(EOFToken{});
+    }
+}
+
+auto scrp::Tokenizer::self_closing_start_tag(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case '>':
+            emit_token(TagToken { _impl->current_token_data, _impl->attributes, true });
+            stateChange = States::Data;
+            break;
+        default:
+            emit_error(parser_error_type::unexpected_solidus_in_tag);
+            stateChange = States::BeforeAttributeName;
+            --pos;
+    }
+
+    if(is_next_char_eof(pos))
+    {
+        emit_error(parser_error_type::eof_in_tag);
+        emit_token(EOFToken{});
+    }
 }

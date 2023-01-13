@@ -213,6 +213,6 @@ TEST_CASE("Find reference benchmarks")
 TEST_CASE("Character reference")
 {
     scrp::initialize();
-    scrp::Tokenizer tok("<!--ds");
+    scrp::Tokenizer tok("<,ds>");
     CHECK(tok.tokenize() == true);
 }
