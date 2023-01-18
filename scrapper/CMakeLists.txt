@@ -26,7 +26,7 @@ SET(SOURCE_FILES
         src/tokenizer.cpp
         src/scrapper.cpp
         src/parser_error.cpp
-        src/encoding.cpp)
+        src/encoding.cpp src/parser.cpp)
 
 SET(LIBRARY_NAME wbscrp)
 

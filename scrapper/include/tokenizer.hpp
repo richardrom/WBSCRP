@@ -18,6 +18,7 @@
 
 namespace scrp
 {
+    class parser;
     class Tokenizer
     {
     public:
@@ -31,10 +32,30 @@ namespace scrp
 
         [[nodiscard]] auto get_parse_errors() const noexcept -> scrp::sc_vector<parser_error>;
 
+        auto set_parser(parser *parser) -> void;
+
+        /// \brief Once a token is passed to the parser is discarded.
+        /// \note This is default behavior
+        /// \note If this flag is set while the tokenizer is running, it will incur in undefined behavior
+        auto release_tokens() -> void;
+
+        /// \brief Don't discard the tokens once they are passed to the parser
+        /// \note If this flag is set while the tokenizer is running, it will incur in undefined behavior
+        auto keep_tokens() -> void;
+
+        [[nodiscard]] auto tokens() const -> const sc_vector<Token *> &;
+
     protected:
         auto handle_eof_error(States stateChange) -> void;
         auto data_state(sc_string::iterator &pos, States &stateChange) -> void;
         auto character_reference(sc_string::iterator &pos, States &stateChange) -> void;
+        auto named_character_reference(sc_string::iterator &pos, States &stateChange) -> void;
+        auto numeric_character_reference(sc_string::iterator &pos, States &stateChange) -> void;
+        auto hexadecimal_character_reference_start(sc_string::iterator &pos, States &stateChange) -> void;
+        auto decimal_character_reference_start(sc_string::iterator &pos, States &stateChange) -> void;
+        auto hexadecimal_character_reference(sc_string::iterator &pos, States &stateChange) -> void;
+        auto decimal_character_reference(sc_string::iterator &pos, States &stateChange) -> void;
+        auto numeric_character_reference_end(sc_string::iterator &pos, States &stateChange) -> void;
         auto ambiguous_ampersand(sc_string::iterator &pos, States &stateChange) -> void;
         auto tag_open_state(sc_string::iterator &pos, States &stateChange) -> void;
         auto markup_declaration_open(sc_string::iterator &pos, States &stateChange) -> void;
@@ -105,8 +126,86 @@ namespace scrp
         [[nodiscard]] auto current_line_offset() const noexcept -> std::size_t;
 
     protected:
-        auto emit_token(const Token &token) noexcept -> void;
+        auto emit_token(Token *token) noexcept -> void;
         auto emit_error(parser_error_type type) noexcept -> void;
+
+        template <typename T, typename... Args>
+        auto emit_token(Args... args) -> void
+        {
+            emit_token( get_token_pool<T>()->alloc(args...) );
+        }
+
+        auto emit_eof_token()
+        {
+            emit_token<EOFToken>();
+        }
+
+        auto emit_end_tag_token()
+        {
+            emit_token<EndTagToken>();
+        }
+
+        template <typename... Args>
+        auto emit_comment_token(Args... args)
+        {
+            emit_token<CommentToken>(std::forward<Args>(args)...);
+        }
+
+        template <typename... Args>
+        auto emit_character_token(Args... args)
+        {
+            emit_token<CharacterToken>(std::forward<Args>(args)...);
+        }
+
+        template <typename... Args>
+        auto emit_doctype_token(Args... args)
+        {
+            emit_token<DOCTYPEToken>(std::forward<Args>(args)...);
+        }
+
+        template <typename... Args>
+        auto emit_cdata_token(Args... args)
+        {
+            emit_token<CDATAToken>(std::forward<Args>(args)...);
+        }
+
+        template <typename... Args>
+        auto emit_tag_token(Args... args)
+        {
+            emit_token<TagToken>(std::forward<Args>(args)...);
+        }
+
+    public:
+        template<typename T>
+        static auto token_cast(Token *tok) -> T *
+        {
+            return static_cast<T *>(tok);
+        }
+
+        static inline auto doctype_token_cast(Token *tok) -> DOCTYPEToken *
+        {
+            return token_cast<DOCTYPEToken>(tok);
+        }
+
+        static inline auto eof_token_cast(Token *tok) -> EOFToken *
+        {
+            return token_cast<EOFToken>(tok);
+        }
+
+        static inline auto comment_token_cast(Token *tok) -> CommentToken *
+        {
+            return token_cast<CommentToken>(tok);
+        }
+
+        static inline auto character_token_cast(Token *tok) -> CharacterToken *
+        {
+            return token_cast<CharacterToken>(tok);
+        }
+
+
+
+    private:
+        auto release_token(Token *&) -> void;
 
     private:
         struct Impl;

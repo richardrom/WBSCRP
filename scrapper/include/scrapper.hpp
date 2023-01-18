@@ -20,6 +20,7 @@
 #include <map>
 #include <stack>
 #include <unordered_map>
+#include <utility>
 
 namespace scrp
 {
@@ -32,6 +33,9 @@ namespace scrp
 #if defined(REPORT_ALLOCATIONS) && defined(CHECK_MEMORY_LEAK)
     template <typename T>
     using pool_allocator = pool::pool_allocator<T, pool::allocator_iostream_reporter, pool::pool_iostream_reporter>;
+
+    template <typename T>
+    using fixed_memory_pool = pool::memory_pool<T, pool::pool_iostream_reporter>;
 #elif !defined(REPORT_ALLOCATIONS) && defined(CHECK_MEMORY_LEAK)
     template <typename T>
     using pool_allocator = pool::pool_allocator<T, pool::pool_iostream_reporter>;
@@ -128,9 +132,13 @@ namespace scrp
 
     struct Token
     {
+        virtual ~Token() = default;
+
         explicit Token(TokenType tp) :
             type { tp } { }
+
         TokenType type;
+        bool consumed { false };
     };
 
     struct EOFToken : public Token
@@ -141,27 +149,27 @@ namespace scrp
 
     struct CommentToken : public Token
     {
-        inline explicit CommentToken(const sc_string &cmt) :
+        inline explicit CommentToken(sc_string cmt) :
             Token(TokenType::Comment),
-            comment { cmt } { }
+            comment {std::move( cmt )} { }
         sc_string comment;
     };
 
     struct DOCTYPEToken : public Token
     {
 
-        inline explicit DOCTYPEToken(const sc_string &nm) :
+        inline explicit DOCTYPEToken(sc_string nm) :
             Token(TokenType::DOCTYPE),
-            name { nm } { }
-        inline DOCTYPEToken(const sc_string &nm, const sc_string &public_id_name) :
+            name {std::move( nm )} { }
+        inline DOCTYPEToken(const sc_string &nm, sc_string public_id_name) :
             Token(TokenType::DOCTYPE),
             name { nm },
-            public_identifier_name { public_id_name } { }
-        inline DOCTYPEToken(const sc_string &nm, const sc_string &public_id_name, const sc_string &system_id_name) :
+            public_identifier_name {std::move( public_id_name )} { }
+        inline DOCTYPEToken(const sc_string &nm, const sc_string &public_id_name, sc_string system_id_name) :
             Token(TokenType::DOCTYPE),
             name { nm },
             public_identifier_name { public_id_name },
-            system_identifier_name { system_id_name } { }
+            system_identifier_name {std::move( system_id_name )} { }
 
         sc_string name;
         sc_string public_identifier_name;
@@ -170,17 +178,17 @@ namespace scrp
 
     struct CDATAToken : public Token
     {
-        inline explicit CDATAToken(const sc_string &data) :
+        inline explicit CDATAToken(sc_string data) :
             Token(TokenType::CDATA),
-            cdata { data } { }
+            cdata {std::move( data )} { }
         sc_string cdata;
     };
 
     struct CharacterToken : public Token
     {
-        inline explicit CharacterToken(const sc_string &cp) :
+        inline explicit CharacterToken(sc_string cp) :
             Token(TokenType::Character),
-            code_point { cp } { }
+            code_point {std::move( cp )} { }
         sc_string code_point;
     };
 
@@ -192,31 +200,86 @@ namespace scrp
 
     struct TagToken : public Token
     {
-        explicit TagToken(const sc_string &name) :
+        explicit TagToken(sc_string name) :
             Token(TokenType::Tag),
-            tag_name { name } { }
+            tag_name {std::move( name )} { }
 
-        explicit TagToken(const sc_string &name, const sc_unordered_map<sc_string, sc_string> &attrs) :
+        explicit TagToken(sc_string name, const sc_unordered_map<sc_string, sc_string> &attrs) :
             Token(TokenType::Tag),
-            tag_name { name },
+            tag_name {std::move( name )},
             attributes { attrs } { }
 
-        explicit TagToken(const sc_string &name, bool self_close) :
+        explicit TagToken(sc_string name, bool self_close) :
             Token(TokenType::Tag),
-            tag_name { name },
+            tag_name {std::move( name )},
             attributes {},
             self_closing { self_close } { }
 
-        explicit TagToken(const sc_string &name, const sc_unordered_map<sc_string, sc_string> &attrs, bool self_close) :
+        explicit TagToken(sc_string name, const sc_unordered_map<sc_string, sc_string> &attrs, bool self_close) :
             Token(TokenType::Tag),
-            tag_name { name },
+            tag_name {std::move( name )},
             attributes { attrs },
             self_closing { self_close } { }
 
-        sc_string tag_name;
         sc_unordered_map<sc_string, sc_string> attributes;
+        sc_string tag_name;
         bool self_closing { false };
     };
+
+    extern fixed_memory_pool<EOFToken> *_pool_eof_token;
+    extern fixed_memory_pool<CommentToken> *_pool_comment_token;
+    extern fixed_memory_pool<DOCTYPEToken> *_pool_doctype_token;
+    extern fixed_memory_pool<CDATAToken> *_pool_cdata_token;
+    extern fixed_memory_pool<CharacterToken> *_pool_character_token;
+    extern fixed_memory_pool<EndTagToken> *_pool_endtag_token;
+    extern fixed_memory_pool<TagToken> *_pool_tag_token;
+
+    template <typename T>
+    inline auto get_token_pool() -> auto
+    {
+        return nullptr;
+    }
+
+    template <>
+    inline auto get_token_pool<EOFToken>() -> auto
+    {
+        return _pool_eof_token;
+    }
+    template <>
+    inline auto get_token_pool<CommentToken>() -> auto
+    {
+        return _pool_comment_token;
+    }
+
+    template <>
+    inline auto get_token_pool<DOCTYPEToken>() -> auto
+    {
+        return _pool_doctype_token;
+    }
+
+    template <>
+    inline auto get_token_pool<CDATAToken>() -> auto
+    {
+        return _pool_cdata_token;
+    }
+
+    template <>
+    inline auto get_token_pool<CharacterToken>() -> auto
+    {
+        return _pool_character_token;
+    }
+
+    template <>
+    inline auto get_token_pool<EndTagToken>() -> auto
+    {
+        return _pool_endtag_token;
+    }
+
+    template <>
+    inline auto get_token_pool<TagToken>() -> auto
+    {
+        return _pool_tag_token;
+    }
 
 } // namespace scrp
 

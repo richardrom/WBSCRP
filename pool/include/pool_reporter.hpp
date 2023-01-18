@@ -124,6 +124,7 @@ namespace pool
 
             std::cout << "\n";
         }
+
     };
 #endif
 #if defined(CHECK_MEMORY_LEAK) && defined(REPORT_ALLOCATIONS)

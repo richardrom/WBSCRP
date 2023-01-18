@@ -7,33 +7,45 @@
 #include "tokenizer.hpp"
 
 #include <algorithm>
-#include <array>
 #include <utility>
 
 #include "encoding_character_reference.hpp"
+#include "parser.hpp"
 
 struct scrp::Tokenizer::Impl
 {
     explicit Impl(scrp::sc_string src) :
         data { std::move(src) }
     {
-        tokens.reserve(1000);
+        tokens.reserve(5000);
+        errors.reserve(100);
         attributes.reserve(20);
+
+        current_token_data.reserve(64);
+        named_reference.reserve(64);
+        extra_token_data_0.reserve(64);
+        extra_token_data_1.reserve(64);
+        ambiguous_character_reference.reserve(64);
     }
 
 public:
     sc_stack<States> state;
-    sc_vector<Token> tokens;
     sc_vector<parser_error> errors;
+    sc_vector<Token *> tokens;
     sc_unordered_map<sc_string, sc_string> attributes;
     sc_string data;
     sc_string current_token_data;
+    sc_string named_reference;
     sc_string extra_token_data_0;
     sc_string extra_token_data_1;
     sc_string ambiguous_character_reference;
+    encoding::character_reference last_char_reference;
     std::size_t current_position { 0 };
     std::size_t current_line { 1 };
     std::size_t line_offset { 0 };
+    parser *parser { nullptr };
+    uint32_t numeric_reference { 0 };
+    bool keep_tokens { false };
 };
 
 scrp::Tokenizer::Tokenizer(sc_string source) :
@@ -41,7 +53,68 @@ scrp::Tokenizer::Tokenizer(sc_string source) :
 {
     assert(scrp::is_initialized());
 }
-scrp::Tokenizer::~Tokenizer() = default;
+scrp::Tokenizer::~Tokenizer()
+{
+    for (auto &_tok : _impl->tokens)
+    {
+        release_token(_tok);
+    }
+}
+
+auto scrp::Tokenizer::release_token(Token *&tok) -> void
+{
+    switch (tok->type)
+    {
+
+        case TokenType::Comment:
+            {
+                auto *t = static_cast<CommentToken *>(tok);
+                get_token_pool<CommentToken>()->release(t);
+            }
+            break;
+        case TokenType::EndOfFile:
+            {
+                auto *t = static_cast<EOFToken *>(tok);
+                get_token_pool<EOFToken>()->release(t);
+            }
+            break;
+        case TokenType::DOCTYPE:
+            {
+                auto *t = static_cast<DOCTYPEToken *>(tok);
+                get_token_pool<DOCTYPEToken>()->release(t);
+            }
+            break;
+        case TokenType::CDATA:
+            {
+                auto *t = static_cast<CDATAToken *>(tok);
+                get_token_pool<CDATAToken>()->release(t);
+            }
+            break;
+        case TokenType::Character:
+            {
+                auto *t = static_cast<CharacterToken *>(tok);
+                get_token_pool<CharacterToken>()->release(t);
+            }
+            break;
+        case TokenType::EndTag:
+            {
+                auto *t = static_cast<EndTagToken *>(tok);
+                get_token_pool<EndTagToken>()->release(t);
+            }
+            break;
+        case TokenType::Tag:
+            {
+                auto *t = static_cast<TagToken *>(tok);
+                get_token_pool<TagToken>()->release(t);
+            }
+            break;
+    }
+}
+
+auto scrp::Tokenizer::set_parser(parser *parser) -> void
+{
+    _impl->parser = parser;
+}
 
 auto scrp::Tokenizer::tokenize() -> bool
 {
@@ -92,6 +165,27 @@ auto scrp::Tokenizer::tokenize() -> bool
                     break;
                 case States::CharacterReference:
                     character_reference(dataIterator, currentState);
+                    break;
+                case States::NamedCharacterReference:
+                    named_character_reference(dataIterator, currentState);
+                    break;
+                case States::NumericCharacterReference:
+                    numeric_character_reference(dataIterator, currentState);
+                    break;
+                case States::HexadecimalCharacterReferenceStart:
+                    hexadecimal_character_reference_start(dataIterator, currentState);
+                    break;
+                case States::DecimalCharacterReferenceStart:
+                    decimal_character_reference_start(dataIterator, currentState);
+                    break;
+                case States::HexadecimalCharacterReference:
+                    hexadecimal_character_reference(dataIterator, currentState);
+                    break;
+                case States::DecimalCharacterReference:
+                    decimal_character_reference(dataIterator, currentState);
+                    break;
+                case States::NumericCharacterReferenceEnd:
+                    numeric_character_reference_end(dataIterator, currentState);
                     break;
                 case States::TagOpen:
                     tag_open_state(dataIterator, currentState);
@@ -259,6 +353,21 @@ auto scrp::Tokenizer::is_return_state_attribute() -> bool
     return false;
 }
 
+auto scrp::Tokenizer::release_tokens() -> void
+{
+    _impl->keep_tokens = true;
+}
+
+auto scrp::Tokenizer::keep_tokens() -> void
+{
+    _impl->keep_tokens = true;
+}
+
+auto scrp::Tokenizer::tokens() const -> const scrp::sc_vector<scrp::Token *> &
+{
+    return _impl->tokens;
+}
+
 auto scrp::Tokenizer::insert_attribute(const sc_string &name, const sc_string &value) -> void
 {
     auto iter = _impl->attributes.find(name);
@@ -335,7 +444,6 @@ auto scrp::Tokenizer::is_char_hex_digit(scrp::char_type ch) noexcept -> bool
 
 auto scrp::Tokenizer::is_noncharacter(int64_t codepoint) noexcept -> bool
 {
-    /*A noncharacter is a code point that is in the range U+FDD0 to U+FDEF, inclusive, or */
     if (codepoint >= 0xFDD0 && codepoint <= 0xFDEF)
         return true;
     switch (codepoint)
@@ -430,12 +538,60 @@ auto scrp::Tokenizer::emit_error(parser_error_type type) noexcept -> void
     _impl->errors.emplace_back(type, _impl->current_position, _impl->line_offset, _impl->current_line);
 }
 
-auto scrp::Tokenizer::emit_token(const Token &token) noexcept -> void
+auto scrp::Tokenizer::emit_token(Token *token) noexcept -> void
 {
+    assert(_impl->parser != nullptr);
+
     _impl->current_token_data.clear();
     _impl->extra_token_data_0.clear();
     _impl->extra_token_data_1.clear();
     _impl->attributes.clear();
+
+    if (!_impl->tokens.empty() && _impl->tokens.back()->type == TokenType::Character && token->type == TokenType::Character)
+    {
+        // Merge characters
+        auto this_tok = dynamic_cast<CharacterToken *>(token);
+        auto last_tok = dynamic_cast<CharacterToken *>(_impl->tokens.back());
+
+        last_tok->code_point += this_tok->code_point;
+        return;
+    }
+    else
+    {
+        if (token->type == TokenType::Character)
+        {
+            // Add the token
+            _impl->tokens.push_back(token);
+            // Do not consume it
+            return;
+        }
+    }
+
+    // Consume all not consumed tokens
+    for (auto &unconsumed_tokens : _impl->tokens)
+    {
+        if (!unconsumed_tokens->consumed)
+        {
+            _impl->parser->consume_token(unconsumed_tokens);
+            unconsumed_tokens->consumed = true;
+        }
+
+        if (!_impl->keep_tokens)
+            release_token(unconsumed_tokens);
+    }
+
+    if (!_impl->keep_tokens)
+        _impl->tokens.clear();
+
+    _impl->parser->consume_token(token);
+    token->consumed = true;
+
+    if (_impl->keep_tokens)
+    {
+        _impl->tokens.push_back(token);
+    }
+    else
+        release_token(token);
 }
 
 auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
@@ -452,8 +608,8 @@ auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
             [[fallthrough]];
         case States::CommentEndDash:
             emit_error(parser_error_type::eof_in_comment);
-            emit_token(CommentToken { _impl->current_token_data });
-            emit_token(EOFToken {});
+            emit_comment_token(_impl->current_token_data);
+            emit_eof_token();
             break;
         case States::DOCTYPE:
             [[fallthrough]];
@@ -473,9 +629,48 @@ auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
             [[fallthrough]];
         case States::BogusDOCTYPE:
             emit_error(parser_error_type::eof_in_doctype);
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
-            emit_token(EOFToken {});
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+            emit_eof_token();
             break;
+        case States::Data: [[fallthrough]];
+        case States::CharacterReference: [[fallthrough]];
+        case States::NamedCharacterReference: [[fallthrough]];
+        case States::NumericCharacterReference: [[fallthrough]];
+        case States::HexadecimalCharacterReferenceStart: [[fallthrough]];
+        case States::DecimalCharacterReferenceStart: [[fallthrough]];
+        case States::HexadecimalCharacterReference: [[fallthrough]];
+        case States::DecimalCharacterReference: [[fallthrough]];
+        case States::NumericCharacterReferenceEnd: [[fallthrough]];
+        case States::AmbiguousAmpersand: [[fallthrough]];
+        case States::TagOpen: [[fallthrough]];
+        case States::MarkupDeclarationOpen: [[fallthrough]];
+        case States::CommentStart: [[fallthrough]];
+        case States::CommentLessThanSign: [[fallthrough]];
+        case States::CommentLessThanSignBang: [[fallthrough]];
+        case States::CommentLessThanSignBangDash: [[fallthrough]];
+        case States::CommentLessThanSignBangDashDash: [[fallthrough]];
+        case States::CommentEndBang: [[fallthrough]];
+        case States::DOCTYPEPublicIdentifierDQ: [[fallthrough]];
+        case States::DOCTYPEPublicIdentifierSQ: [[fallthrough]];
+        case States::AfterDOCTYPEPublicIdentifier: [[fallthrough]];
+        case States::BetweenDOCTYPEPublicAndSystemIdentifiers: [[fallthrough]];
+        case States::DOCTYPESystemIdentifierDQ: [[fallthrough]];
+        case States::DOCTYPESystemIdentifierSQ: [[fallthrough]];
+        case States::AfterDOCTYPESystemIdentifier: [[fallthrough]];
+        case States::CDATASection: [[fallthrough]];
+        case States::CDATASectionBracket: [[fallthrough]];
+        case States::CDATASectionEnd: [[fallthrough]];
+        case States::EndTagOpen: [[fallthrough]];
+        case States::TagName: [[fallthrough]];
+        case States::BeforeAttributeName: [[fallthrough]];
+        case States::SelfClosingStartTag: [[fallthrough]];
+        case States::AttributeName: [[fallthrough]];
+        case States::AfterAttributeName: [[fallthrough]];
+        case States::BeforeAttributeValue: [[fallthrough]];
+        case States::AttributeValueDQ: [[fallthrough]];
+        case States::AttributeValueSQ: [[fallthrough]];
+        case States::AttributeValueUnquoted: [[fallthrough]];
+        case States::AfterAttributeValueQuoted: /* nothing to do */ break;
     }
 }
 
@@ -494,13 +689,13 @@ auto scrp::Tokenizer::data_state(sc_string::iterator &pos, States &stateChange) 
             emit_error(parser_error_type::unexpected_null_character);
             break;
         default:
-            emit_token(CharacterToken { sc_string { *pos } });
+            emit_character_token(sc_string { *pos });
             break;
     }
 
     if (is_next_char_eof(pos))
     {
-        emit_token(EOFToken {});
+        emit_eof_token();
     }
 }
 
@@ -529,7 +724,7 @@ auto scrp::Tokenizer::tag_open_state(sc_string::iterator &pos, States &stateChan
             else
             {
                 emit_error(parser_error_type::invalid_first_character_of_tag_name);
-                emit_token(CharacterToken { "<" });
+                emit_character_token("<");
                 stateChange = States::Data;
                 --pos;
             }
@@ -539,270 +734,324 @@ auto scrp::Tokenizer::tag_open_state(sc_string::iterator &pos, States &stateChan
     if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_before_tag_name);
-        emit_token(CharacterToken { ">" });
-        emit_token(EOFToken {});
+        emit_character_token(">");
+        emit_eof_token();
     }
 }
 
 auto scrp::Tokenizer::character_reference(sc_string::iterator &pos, scrp::States &stateChange) -> void
 {
-    sc_string named_reference;
-    named_reference.reserve(32);
-    auto last_reference = encoding::null_chref;
-    _impl->ambiguous_character_reference.clear();
-    int64_t numeric_reference = 0;
-    for (; pos != _impl->data.end(); ++pos)
+
+    switch (*pos)
     {
-        const auto &ch = *pos;
-
-        if (stateChange == States::CharacterReference)
-        {
-            if (is_char_alphanumeric(ch))
+        case '#':
+            stateChange              = States::NumericCharacterReference;
+            _impl->numeric_reference = 0;
+            _impl->named_reference.clear();
+            break;
+        default:
+            if (is_char_alphanumeric(*pos))
             {
-                named_reference += ch;
-                stateChange = States::NamedCharacterReference;
-            }
-            else if (ch == '#')
-            {
-                stateChange = States::NumericCharacterReference;
-            }
-            else
-            {
-                // TODO: Flush code points consumed as a character reference. Reconsume in the return state.
-            }
-        }
-        else if (stateChange == States::NamedCharacterReference)
-        {
-            if (ch == ';')
-            {
-                named_reference += ch;
-                const auto &current_ref = encoding::find_reference(named_reference);
-                if (current_ref == encoding::null_chref)
-                {
-                    stateChange                          = States::AmbiguousAmpersand;
-                    _impl->ambiguous_character_reference = named_reference;
-                    return;
-                }
-                else
-                {
-                    // TODO: Emit code point
-                    int i = 0;
-                }
-            }
-            else
-            {
-                named_reference += ch;
-
-                if (!is_return_state_attribute())
-                {
-                    const auto &current_ref = encoding::find_reference(named_reference);
-                    if (current_ref != encoding::null_chref)
-                    {
-                        last_reference = current_ref;
-                    }
-                    else if (current_ref == encoding::null_chref && last_reference != encoding::null_chref)
-                    {
-                        emit_error(parser_error_type::missing_semicolon_after_character_reference);
-                        // TODO: Emit code point
-
-                        // Switch to the return state
-                        stateChange = _impl->state.top();
-                        _impl->state.pop();
-                        return;
-                    }
-                }
-                else
-                {
-                    // TODO: Handle attribute return state
-                }
-            }
-        }
-        else if (stateChange == States::NumericCharacterReference)
-        {
-            if (ch == 'x' || ch == 'X')
-            {
-                stateChange = States::HexadecimalCharacterReferenceStart;
-            }
-            else
-            {
-                stateChange = States::DecimalCharacterReferenceStart;
-                --pos; // Reconsume
-            }
-        }
-        else if (stateChange == States::HexadecimalCharacterReferenceStart)
-        {
-            if (is_char_hex_digit(ch))
-            {
-                stateChange = States::HexadecimalCharacterReference;
-                --pos; // Reconsume
-            }
-            else
-            {
-                emit_error(parser_error_type::absence_of_digits_in_numeric_character_reference);
-
-                stateChange = _impl->state.top();
-                _impl->state.pop();
-
-                --pos; // Reconsume in the return state
-            }
-        }
-        else if (stateChange == States::DecimalCharacterReferenceStart)
-        {
-            if (is_char_digit(ch))
-            {
-                stateChange = States::DecimalCharacterReference;
-                --pos; // Reconsume
-            }
-            else
-            {
-                emit_error(parser_error_type::absence_of_digits_in_numeric_character_reference);
-
-                stateChange = _impl->state.top();
-                _impl->state.pop();
-
-                --pos; // Reconsume in the return state
-            }
-        }
-        else if (stateChange == States::HexadecimalCharacterReference)
-        {
-            if (is_char_digit(ch))
-            {
-                numeric_reference *= 16;
-                numeric_reference += static_cast<int64_t>(ch) - 0x30ll;
-            }
-            else if (is_char_upper_hex_digit(ch))
-            {
-                numeric_reference *= 16;
-                numeric_reference += static_cast<int64_t>(ch) - 0x37ll;
-            }
-            else if (is_char_lower_hex_digit(ch))
-            {
-                numeric_reference *= 16;
-                numeric_reference += static_cast<int64_t>(ch) - 0x57ll;
-            }
-            else if (ch == ';')
-            {
-                stateChange = States::NumericCharacterReferenceEnd;
-            }
-            else
-            {
-                emit_error(parser_error_type::missing_semicolon_after_character_reference);
-                stateChange = States::NumericCharacterReferenceEnd;
+                _impl->named_reference.clear();
+                _impl->last_char_reference = encoding::null_chref;
+                stateChange                = States::NamedCharacterReference;
                 --pos;
             }
-        }
-        else if (stateChange == States::DecimalCharacterReference)
-        {
-            if (is_char_digit(ch))
-            {
-                numeric_reference *= 10;
-                numeric_reference += static_cast<int64_t>(ch) - 0x30ll;
-            }
-            else if (ch == ';')
-            {
-                stateChange = States::NumericCharacterReferenceEnd;
-                return;
-            }
             else
             {
-                emit_error(parser_error_type::missing_semicolon_after_character_reference);
-                stateChange = States::NumericCharacterReferenceEnd;
+                if (!_impl->state.empty() && _impl->state.top() != States::Data)
+                    stateChange = _impl->state.top();
+                else
+                    stateChange = States::Data;
                 --pos;
-                return;
             }
-        }
+    }
+}
 
-        if (stateChange == States::NumericCharacterReferenceEnd)
+auto scrp::Tokenizer::named_character_reference(sc_string::iterator &pos, States &stateChange) -> void
+{
+    const auto &ch = *pos;
+
+    // NOTE: this part is not compliant with the standard, however, the output is the same
+
+    // Keep adding the character
+    _impl->named_reference += ch;
+
+    const auto &current_ref = encoding::find_reference(_impl->named_reference);
+
+    if (current_ref != encoding::null_chref)
+    {
+        // Up to this point, this code will match for example &notin;, &notinE; &notindot; ..., as &not
+        // Because &not is not mandatory with a semicolon, we must change this
+        if (_impl->named_reference.back() != ';')
         {
-            if (numeric_reference == 0)
-            {
-                emit_error(parser_error_type::null_character_reference);
-                numeric_reference = 0xFFFD;
-            }
-            else if (numeric_reference > 0x10FFFF)
-            {
-                emit_error(parser_error_type::character_reference_outside_unicode_range);
-                numeric_reference = 0xFFFD;
-            }
-            else if (numeric_reference >= 0xD800 && numeric_reference <= 0xDFFF)
-            {
-                emit_error(parser_error_type::surrogate_character_reference);
-                numeric_reference = 0xFFFD;
-            }
-            else if (is_noncharacter(numeric_reference))
-            {
-                emit_error(parser_error_type::noncharacter_character_reference);
-                numeric_reference = -1; // non-compliant: use to avoid emitting the character
-            }
-            else if (numeric_reference == 0x0D || is_control_character(numeric_reference))
-            {
-                emit_error(parser_error_type::control_character_reference);
-                switch (numeric_reference)
-                {
-                    case 0x80: numeric_reference = 0x20AC; break;
-                    case 0x82: numeric_reference = 0x201A; break;
-                    case 0x83: numeric_reference = 0x0192; break;
-                    case 0x84: numeric_reference = 0x201E; break;
-                    case 0x85: numeric_reference = 0x2026; break;
-                    case 0x86: numeric_reference = 0x2020; break;
-                    case 0x87: numeric_reference = 0x2021; break;
-                    case 0x88: numeric_reference = 0x02C6; break;
-                    case 0x89: numeric_reference = 0x2030; break;
-                    case 0x8A: numeric_reference = 0x0160; break;
-                    case 0x8B: numeric_reference = 0x2039; break;
-                    case 0x8C: numeric_reference = 0x0152; break;
-                    case 0x8E: numeric_reference = 0x017D; break;
-                    case 0x91: numeric_reference = 0x2018; break;
-                    case 0x92: numeric_reference = 0x2019; break;
-                    case 0x93: numeric_reference = 0x201C; break;
-                    case 0x94: numeric_reference = 0x201D; break;
-                    case 0x95: numeric_reference = 0x2022; break;
-                    case 0x96: numeric_reference = 0x2013; break;
-                    case 0x97: numeric_reference = 0x2014; break;
-                    case 0x98: numeric_reference = 0x02DC; break;
-                    case 0x99: numeric_reference = 0x2122; break;
-                    case 0x9A: numeric_reference = 0x0161; break;
-                    case 0x9B: numeric_reference = 0x203A; break;
-                    case 0x9C: numeric_reference = 0x0153; break;
-                    case 0x9E: numeric_reference = 0x017E; break;
-                    case 0x9F: numeric_reference = 0x0178; break;
-                    default:;
-                }
-            }
-
-            // TODO: emit the numeric reference
-
-            // Return to the return state
-            stateChange = _impl->state.top();
-            _impl->state.pop();
+            // Keep this reference
+            _impl->last_char_reference = current_ref;
+            // Keep track of the position of string in case we must flush this character reference and flush
+            _impl->numeric_reference = static_cast<uint32_t>(_impl->named_reference.size());
+            // Keep gathering characters
+            return;
         }
     }
 
-    pos = _impl->data.end();
+    // Stop getting the character reference when it encounters a non alpha character except for the semicolon.
+
+    if ((is_char_alpha(ch) || ch != ';') && current_ref == encoding::null_chref)
+    {
+        // Keep gathering information only if ch != ';'
+        if (ch != ';')
+            return;
+        // In the other case keep going
+    }
+
+    if (current_ref == encoding::null_chref)
+    {
+        // We reach a non alpha character and find_reference didn't catch a character reference
+        if (is_return_state_attribute()) // it doesn't matter if _impl->last_char_reference is not null_chref
+        {
+            // Not an error, just keep push the data in the
+            const sc_string to_token_value = sc_string { "&" } + _impl->named_reference;
+            _impl->extra_token_data_1 += to_token_value;
+
+            // Go back to the return state
+            // since is_return_state_attribute() -> true; it is certain that _impl->state is not empty
+            stateChange = _impl->state.top();
+        }
+        else
+        {
+            if (_impl->last_char_reference != encoding::null_chref)
+            {
+                // Emit the last_char_reference
+                emit_character_token(_impl->last_char_reference.utf8_encoding.data());
+                emit_character_token(_impl->named_reference.substr(_impl->numeric_reference, _impl->named_reference.size()));
+
+                stateChange = States::Data;
+            }
+            else
+            {
+                stateChange = States::AmbiguousAmpersand;
+            }
+        }
+    }
+    else
+    {
+        if (is_return_state_attribute())
+        {
+            _impl->extra_token_data_1 += current_ref.utf8_encoding;
+
+            // Go back to the return state
+            // since is_return_state_attribute() -> true; it is certain that _impl->state is not empty
+            stateChange = _impl->state.top();
+        }
+        else
+        {
+            emit_character_token(_impl->last_char_reference.utf8_encoding.data());
+
+            stateChange = States::Data;
+        }
+    }
+}
+
+auto scrp::Tokenizer::numeric_character_reference(sc_string::iterator &pos, States &stateChange) -> void
+{
+    switch (*pos)
+    {
+        case 'x':
+        case 'X':
+            stateChange = States::HexadecimalCharacterReferenceStart;
+            break;
+        default:
+            stateChange = States::HexadecimalCharacterReferenceStart;
+    }
+}
+
+auto scrp::Tokenizer::hexadecimal_character_reference_start(sc_string::iterator &pos, States &stateChange) -> void
+{
+    if (is_char_hex_digit(*pos))
+    {
+        stateChange = States::HexadecimalCharacterReference;
+        --pos;
+    }
+    else
+    {
+        emit_error(parser_error_type::absence_of_digits_in_numeric_character_reference);
+        if (!_impl->state.empty())
+            stateChange = _impl->state.top();
+        else
+            stateChange = States::Data;
+
+        if (stateChange != States::Data)
+            _impl->extra_token_data_1 += *pos;
+
+        --pos;
+    }
+}
+
+auto scrp::Tokenizer::decimal_character_reference_start(sc_string::iterator &pos, States &stateChange) -> void
+{
+    if (is_char_digit(*pos))
+    {
+        stateChange = States::DecimalCharacterReference;
+        --pos;
+    }
+    else
+    {
+        emit_error(parser_error_type::absence_of_digits_in_numeric_character_reference);
+        if (!_impl->state.empty())
+            stateChange = _impl->state.top();
+        else
+            stateChange = States::Data;
+
+        if (stateChange != States::Data)
+            _impl->extra_token_data_1 += *pos;
+
+        --pos;
+    }
+}
+
+auto scrp::Tokenizer::hexadecimal_character_reference(sc_string::iterator &pos, States &stateChange) -> void
+{
+    const auto &ch = *pos;
+    if (is_char_digit(ch))
+    {
+        _impl->numeric_reference *= 16;
+        _impl->numeric_reference += static_cast<int64_t>(ch) - 0x30ll;
+    }
+    else if (is_char_lower_hex_digit(ch))
+    {
+        _impl->numeric_reference *= 16;
+        _impl->numeric_reference += static_cast<int64_t>(ch) - 0x57ll;
+    }
+    else if (is_char_upper_hex_digit(ch))
+    {
+        _impl->numeric_reference *= 16;
+        _impl->numeric_reference += static_cast<int64_t>(ch) - 0x37ll;
+    }
+    else if (ch == ';')
+    {
+        stateChange = States::NumericCharacterReference;
+    }
+    else
+    {
+        emit_error(parser_error_type::missing_semicolon_after_character_reference);
+        stateChange = States::NumericCharacterReferenceEnd;
+        --pos;
+    }
+}
+
+auto scrp::Tokenizer::decimal_character_reference(sc_string::iterator &pos, States &stateChange) -> void
+{
+    const auto &ch = *pos;
+    if (is_char_digit(ch))
+    {
+        _impl->numeric_reference *= 10;
+        _impl->numeric_reference += static_cast<int64_t>(ch) - 0x30ll;
+    }
+    else if (ch == ';')
+    {
+        stateChange = States::NumericCharacterReference;
+    }
+    else
+    {
+        emit_error(parser_error_type::missing_semicolon_after_character_reference);
+        stateChange = States::NumericCharacterReferenceEnd;
+        --pos;
+    }
+}
+
+auto scrp::Tokenizer::numeric_character_reference_end(sc_string::iterator &pos, States &stateChange) -> void
+{
+    if (_impl->numeric_reference == 0)
+    {
+        emit_error(parser_error_type::null_character_reference);
+        _impl->numeric_reference = 0xFFFD;
+    }
+    else if (_impl->numeric_reference > 0x10FFFF)
+    {
+        emit_error(parser_error_type::character_reference_outside_unicode_range);
+        _impl->numeric_reference = 0xFFFD;
+    }
+    else if (_impl->numeric_reference >= 0xD800 && _impl->numeric_reference <= 0xDFFF)
+    {
+        emit_error(parser_error_type::surrogate_character_reference);
+        _impl->numeric_reference = 0xFFFD;
+    }
+    else if (is_noncharacter(_impl->numeric_reference))
+    {
+        emit_error(parser_error_type::noncharacter_character_reference);
+        _impl->numeric_reference = -1; // non-compliant: use to avoid emitting the character
+    }
+    else if (_impl->numeric_reference == 0x0D || is_control_character(_impl->numeric_reference))
+    {
+        emit_error(parser_error_type::control_character_reference);
+        switch (_impl->numeric_reference)
+        {
+            case 0x80: _impl->numeric_reference = 0x20AC; break;
+            case 0x82: _impl->numeric_reference = 0x201A; break;
+            case 0x83: _impl->numeric_reference = 0x0192; break;
+            case 0x84: _impl->numeric_reference = 0x201E; break;
+            case 0x85: _impl->numeric_reference = 0x2026; break;
+            case 0x86: _impl->numeric_reference = 0x2020; break;
+            case 0x87: _impl->numeric_reference = 0x2021; break;
+            case 0x88: _impl->numeric_reference = 0x02C6; break;
+            case 0x89: _impl->numeric_reference = 0x2030; break;
+            case 0x8A: _impl->numeric_reference = 0x0160; break;
+            case 0x8B: _impl->numeric_reference = 0x2039; break;
+            case 0x8C: _impl->numeric_reference = 0x0152; break;
+            case 0x8E: _impl->numeric_reference = 0x017D; break;
+            case 0x91: _impl->numeric_reference = 0x2018; break;
+            case 0x92: _impl->numeric_reference = 0x2019; break;
+            case 0x93: _impl->numeric_reference = 0x201C; break;
+            case 0x94: _impl->numeric_reference = 0x201D; break;
+            case 0x95: _impl->numeric_reference = 0x2022; break;
+            case 0x96: _impl->numeric_reference = 0x2013; break;
+            case 0x97: _impl->numeric_reference = 0x2014; break;
+            case 0x98: _impl->numeric_reference = 0x02DC; break;
+            case 0x99: _impl->numeric_reference = 0x2122; break;
+            case 0x9A: _impl->numeric_reference = 0x0161; break;
+            case 0x9B: _impl->numeric_reference = 0x203A; break;
+            case 0x9C: _impl->numeric_reference = 0x0153; break;
+            case 0x9E: _impl->numeric_reference = 0x017E; break;
+            case 0x9F: _impl->numeric_reference = 0x0178; break;
+            default:;
+        }
+    }
+
+    if (!_impl->state.empty())
+        stateChange = _impl->state.top();
+    else
+        stateChange = States::Data;
+
+    const auto utf8_character_reference = encoding::rt_to_utf8(_impl->numeric_reference);
+    if (stateChange != States::Data)
+    {
+        _impl->extra_token_data_1 += encoding::rt_to_view(utf8_character_reference);
+    }
+    else
+    {
+        emit_character_token(encoding::rt_to_view(utf8_character_reference));
+    }
 }
 
 auto scrp::Tokenizer::ambiguous_ampersand(sc_string::iterator &pos, States &stateChange) -> void
 {
     if (!is_return_state_attribute())
     {
-        if (!_impl->ambiguous_character_reference.empty())
-        {
-            emit_error(parser_error_type::unknown_named_character_reference);
-        }
-        /*
-        else
-        {
-            NOT AN ERROR
-        }
-        */
+        emit_error(parser_error_type::unknown_named_character_reference);
     }
     else
     {
-        // TODO: Handle attribute value
+        const sc_string to_token_value = sc_string { "&" } + _impl->named_reference;
+        _impl->extra_token_data_1 += to_token_value;
     }
+
+    if (!_impl->state.empty() && _impl->state.top() != States::Data)
+        stateChange = _impl->state.top();
 
     stateChange = _impl->state.top();
     _impl->state.pop();
+
+    --pos;
 }
 
 auto scrp::Tokenizer::markup_declaration_open(sc_string::iterator &pos, States &stateChange) -> void
@@ -851,6 +1100,10 @@ auto scrp::Tokenizer::markup_declaration_open(sc_string::iterator &pos, States &
             {
                 emit_error(parser_error_type::incorrectly_opened_comment);
                 stateChange = States::BogusComment;
+                markup_name.pop_back();
+                _impl->current_token_data = markup_name;
+                --pos;
+                return;
             }
         }
     }
@@ -861,7 +1114,7 @@ auto scrp::Tokenizer::bogus_comment(sc_string::iterator &pos, States &stateChang
     switch (*pos)
     {
         case '>':
-            emit_token(CommentToken { _impl->current_token_data });
+            emit_comment_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         case '0':
@@ -882,7 +1135,7 @@ auto scrp::Tokenizer::comment_start(sc_string::iterator &pos, scrp::States &stat
             break;
         case '>':
             emit_error(parser_error_type::abrupt_closing_of_empty_comment);
-            emit_token(CommentToken { _impl->current_token_data });
+            emit_comment_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
@@ -900,7 +1153,7 @@ auto scrp::Tokenizer::comment_start_dash(sc_string::iterator &pos, scrp::States 
             break;
         case '>':
             emit_error(parser_error_type::abrupt_closing_of_empty_comment);
-            emit_token(CommentToken { _impl->current_token_data });
+            emit_comment_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
@@ -1001,8 +1254,8 @@ auto scrp::Tokenizer::comment_end_dash(sc_string::iterator &pos, scrp::States &s
     {
         emit_error(parser_error_type::eof_in_comment);
         stateChange = States::Data; // Prevent the call to handle_eof_error()
-        emit_token(CommentToken { _impl->current_token_data });
-        emit_token(EOFToken {});
+        emit_comment_token(_impl->current_token_data);
+        emit_eof_token();
     }
 
     switch (*pos)
@@ -1022,7 +1275,7 @@ auto scrp::Tokenizer::comment_end(sc_string::iterator &pos, scrp::States &stateC
     switch (*pos)
     {
         case '>':
-            emit_token(CommentToken { _impl->current_token_data });
+            emit_comment_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         case '!':
@@ -1048,7 +1301,7 @@ auto scrp::Tokenizer::comment_end_bang(sc_string::iterator &pos, States &stateCh
             break;
         case '>':
             emit_error(parser_error_type::incorrectly_closed_comment);
-            emit_token(CommentToken { _impl->current_token_data });
+            emit_comment_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
@@ -1099,7 +1352,7 @@ auto scrp::Tokenizer::before_doctype_name(sc_string::iterator &pos, States &stat
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_name);
-            emit_token(DOCTYPEToken { _impl->current_token_data });
+            emit_doctype_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
@@ -1125,7 +1378,7 @@ auto scrp::Tokenizer::doctype_name(sc_string::iterator &pos, scrp::States &state
             stateChange = States::AfterDOCTYPEName;
             break;
         case '>':
-            emit_token(DOCTYPEToken { _impl->current_token_data });
+            emit_doctype_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         case 0:
@@ -1133,7 +1386,7 @@ auto scrp::Tokenizer::doctype_name(sc_string::iterator &pos, scrp::States &state
             _impl->current_token_data += encoding::_sv_invalid;
             break;
         default:
-            _impl->current_token_data += *pos;
+            _impl->current_token_data += to_lower(*pos);
     }
 }
 
@@ -1154,7 +1407,7 @@ auto scrp::Tokenizer::after_doctype_name(sc_string::iterator &pos, scrp::States 
             // ignore
             break;
         case '>':
-            emit_token(DOCTYPEToken { _impl->current_token_data });
+            emit_doctype_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
@@ -1210,7 +1463,7 @@ auto scrp::Tokenizer::after_doctype_public_keyword(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_public_identifier);
-            emit_token(DOCTYPEToken { _impl->current_token_data });
+            emit_doctype_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
@@ -1241,7 +1494,7 @@ auto scrp::Tokenizer::before_doctype_public_identifier(sc_string::iterator &pos,
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_public_identifier);
-            emit_token(DOCTYPEToken { _impl->current_token_data });
+            emit_doctype_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
@@ -1264,7 +1517,7 @@ auto scrp::Tokenizer::doctype_public_identifier_dq(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_public_identifier);
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
             stateChange = States::Data;
             break;
         default:
@@ -1274,8 +1527,8 @@ auto scrp::Tokenizer::doctype_public_identifier_dq(sc_string::iterator &pos, scr
     if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
-        emit_token(EOFToken {});
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
+        emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
     }
@@ -1295,7 +1548,7 @@ auto scrp::Tokenizer::doctype_public_identifier_sq(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_public_identifier);
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
             stateChange = States::Data;
             break;
         default:
@@ -1305,8 +1558,8 @@ auto scrp::Tokenizer::doctype_public_identifier_sq(sc_string::iterator &pos, scr
     if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
-        emit_token(EOFToken {});
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
+        emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
     }
@@ -1326,7 +1579,7 @@ auto scrp::Tokenizer::after_doctype_public_identifier(sc_string::iterator &pos, 
             stateChange = States::BetweenDOCTYPEPublicAndSystemIdentifiers;
             break;
         case '>':
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
             stateChange = States::Data;
             break;
         case '\"':
@@ -1346,8 +1599,8 @@ auto scrp::Tokenizer::after_doctype_public_identifier(sc_string::iterator &pos, 
     if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
-        emit_token(EOFToken {});
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
+        emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
     }
@@ -1367,7 +1620,7 @@ auto scrp::Tokenizer::between_doctype_public_and_system_identifiers(sc_string::i
             // Ignore
             break;
         case '>':
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
             stateChange = States::Data;
             break;
         case '\"':
@@ -1385,8 +1638,8 @@ auto scrp::Tokenizer::between_doctype_public_and_system_identifiers(sc_string::i
     if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0 });
-        emit_token(EOFToken {});
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
+        emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
     }
@@ -1415,7 +1668,7 @@ auto scrp::Tokenizer::after_doctype_system_keyword(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_system_identifier);
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
             stateChange = States::Data;
             break;
         default:
@@ -1446,7 +1699,7 @@ auto scrp::Tokenizer::before_doctype_system_identifier(sc_string::iterator &pos,
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_system_identifier);
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
             stateChange = States::Data;
             break;
         default:
@@ -1477,8 +1730,8 @@ auto scrp::Tokenizer::doctype_system_identifier_dq(sc_string::iterator &pos, scr
     if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
-        emit_token(EOFToken {});
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+        emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
     }
@@ -1505,8 +1758,8 @@ auto scrp::Tokenizer::doctype_system_identifier_sq(sc_string::iterator &pos, scr
     if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
-        emit_token(EOFToken {});
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+        emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
     }
@@ -1526,7 +1779,7 @@ auto scrp::Tokenizer::after_doctype_system_identifier(sc_string::iterator &pos, 
             // Ignore
             break;
         case '>':
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
             stateChange = States::Data;
             break;
         default:
@@ -1538,8 +1791,8 @@ auto scrp::Tokenizer::after_doctype_system_identifier(sc_string::iterator &pos, 
     if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
-        emit_token(EOFToken {});
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+        emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
     }
@@ -1550,7 +1803,7 @@ auto scrp::Tokenizer::bogus_doctype(sc_string::iterator &pos, scrp::States &stat
     switch (*pos)
     {
         case '>':
-            emit_token(DOCTYPEToken { _impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1 });
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
             stateChange = States::Data;
             break;
         case 0:
@@ -1574,7 +1827,7 @@ auto scrp::Tokenizer::cdata_section(sc_string::iterator &pos, scrp::States &stat
     if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_cdata);
-        emit_token(CDATAToken { _impl->current_token_data });
+        emit_cdata_token(_impl->current_token_data);
         return;
     }
 }
@@ -1601,7 +1854,7 @@ auto scrp::Tokenizer::cdata_section_end(sc_string::iterator &pos, scrp::States &
             _impl->current_token_data += ']';
             break;
         case '>':
-            emit_token(CDATAToken { _impl->current_token_data });
+            emit_cdata_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
@@ -1622,7 +1875,7 @@ auto scrp::Tokenizer::end_tag_open(sc_string::iterator &pos, scrp::States &state
         default:
             if (is_char_alpha(*pos))
             {
-                emit_token(EndTagToken {});
+                emit_end_tag_token();
                 stateChange = States::TagName;
                 --pos;
             }
@@ -1636,9 +1889,9 @@ auto scrp::Tokenizer::end_tag_open(sc_string::iterator &pos, scrp::States &state
 
     if (is_next_char_eof(pos))
     {
-        emit_token(CharacterToken { "<" });
-        emit_token(CharacterToken("/"));
-        emit_token(EOFToken {});
+        emit_character_token("<");
+        emit_character_token("/");
+        emit_eof_token();
     }
 }
 
@@ -1671,7 +1924,7 @@ auto scrp::Tokenizer::tag_name(sc_string::iterator &pos, scrp::States &stateChan
     if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_tag);
-        emit_token(EOFToken {});
+        emit_eof_token();
     }
 }
 
@@ -1775,7 +2028,7 @@ auto scrp::Tokenizer::after_attribute_name(sc_string::iterator &pos, States &sta
             stateChange = States::BeforeAttributeValue;
             break;
         case '>':
-            emit_token(TagToken { _impl->current_token_data, _impl->attributes });
+            emit_tag_token(_impl->current_token_data, _impl->attributes);
             stateChange = States::Data;
             break;
         default:
@@ -1789,7 +2042,7 @@ auto scrp::Tokenizer::after_attribute_name(sc_string::iterator &pos, States &sta
     if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_tag);
-        emit_token(EOFToken {});
+        emit_eof_token();
     }
 }
 
@@ -1814,7 +2067,7 @@ auto scrp::Tokenizer::before_attribute_value(sc_string::iterator &pos, States &s
             break;
         case '>':
             emit_error(parser_error_type::missing_attribute_value);
-            emit_token(TagToken { _impl->current_token_data, _impl->attributes });
+            emit_tag_token(_impl->current_token_data, _impl->attributes);
             stateChange = States::Data;
             break;
         default:
@@ -1842,10 +2095,10 @@ auto scrp::Tokenizer::attribute_value_dq(sc_string::iterator &pos, States &state
             _impl->extra_token_data_1 += *pos;
     }
 
-    if(is_next_char_eof(pos))
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_tag);
-        emit_token(EOFToken{});
+        emit_eof_token();
     }
 }
 
@@ -1868,10 +2121,10 @@ auto scrp::Tokenizer::attribute_value_sq(sc_string::iterator &pos, States &state
             _impl->extra_token_data_1 += *pos;
     }
 
-    if(is_next_char_eof(pos))
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_tag);
-        emit_token(EOFToken{});
+        emit_eof_token();
     }
 }
 
@@ -1887,6 +2140,8 @@ auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States 
             [[fallthrough]];
         case 0x20:
             stateChange = States::BeforeAttributeName;
+            if (!_impl->state.empty() && _impl->state.top() != States::Data)
+                _impl->state.pop();
             break;
         case '&':
             _impl->state.push(States::AttributeValueUnquoted);
@@ -1896,7 +2151,9 @@ auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States 
             insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
             _impl->extra_token_data_0.clear();
             _impl->extra_token_data_1.clear();
-            emit_token(TagToken { _impl->current_token_data, _impl->attributes });
+            emit_tag_token(_impl->current_token_data, _impl->attributes);
+            if (!_impl->state.empty() && _impl->state.top() != States::Data)
+                _impl->state.pop();
             stateChange = States::Data;
             break;
         case 0:
@@ -1918,10 +2175,10 @@ auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States 
             _impl->extra_token_data_1 += *pos;
     }
 
-    if(is_next_char_eof(pos))
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_tag);
-        emit_token(EOFToken{});
+        emit_eof_token();
     }
 }
 
@@ -1945,20 +2202,21 @@ auto scrp::Tokenizer::after_attribute_value_quoted(sc_string::iterator &pos, Sta
             insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
             _impl->extra_token_data_0.clear();
             _impl->extra_token_data_1.clear();
-            emit_token(TagToken { _impl->current_token_data, _impl->attributes });
+            emit_tag_token(_impl->current_token_data, _impl->attributes);
+            if (!_impl->state.empty() && _impl->state.top() != States::Data)
+                _impl->state.pop();
             stateChange = States::Data;
             break;
         default:
             emit_error(parser_error_type::missing_whitespace_between_attributes);
             stateChange = States::BeforeAttributeName;
             --pos;
-
     }
 
-    if(is_next_char_eof(pos))
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_tag);
-        emit_token(EOFToken{});
+        emit_eof_token();
     }
 }
 
@@ -1967,7 +2225,9 @@ auto scrp::Tokenizer::self_closing_start_tag(sc_string::iterator &pos, States &s
     switch (*pos)
     {
         case '>':
-            emit_token(TagToken { _impl->current_token_data, _impl->attributes, true });
+            emit_tag_token(_impl->current_token_data, _impl->attributes, true);
+            if (!_impl->state.empty() && _impl->state.top() != States::Data)
+                _impl->state.pop();
             stateChange = States::Data;
             break;
         default:
@@ -1976,9 +2236,9 @@ auto scrp::Tokenizer::self_closing_start_tag(sc_string::iterator &pos, States &s
             --pos;
     }
 
-    if(is_next_char_eof(pos))
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_tag);
-        emit_token(EOFToken{});
+        emit_eof_token();
     }
 }

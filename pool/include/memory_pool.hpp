@@ -37,7 +37,7 @@ namespace pool
 {
 
 #if defined(REPORT_ALLOCATIONS) || defined(CHECK_MEMORY_LEAK)
-    template <typename T, pool_reporter P>
+    template <typename T, pool_reporter P, bool dest=true>
 #else
     template <typename T>
 #endif /*REPORT_ALLOCATIONS*/
@@ -279,7 +279,7 @@ namespace pool
                 if (releaseUsedBlock)
                 {
                     // Call the destructor before freeing the block
-                    if constexpr (std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
+                    if constexpr (dest && std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
                         ptr->~T();
 
                     // Do not free the block, we might scramble the available address
@@ -301,7 +301,7 @@ namespace pool
                 *used_block->next_free_chunk = 0;
 
                 // Call the destructor
-                if constexpr (std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
+                if constexpr (dest && std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
                     ptr->~T();
                 ptr = nullptr;
 
@@ -309,7 +309,7 @@ namespace pool
             }
 
             // Call the destructor
-            if constexpr (std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
+            if constexpr (dest && std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
                 ptr->~T();
 
             // In this situation we must point used_block->next_free_chunk to ptr
@@ -467,6 +467,8 @@ namespace pool
         P reporter;
 #endif /*REPORT_ALLOCATIONS*/
     };
+
+
 
 } // namespace pool
 

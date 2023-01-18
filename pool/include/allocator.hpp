@@ -73,7 +73,6 @@ namespace pool
             return find;
         }
 
-
         auto allocate(std::size_t n) -> void *
         {
             std::unique_lock<std::mutex> lock(thread_protection);
@@ -88,6 +87,7 @@ namespace pool
             return pool->second->template alloc();
         }
 
+
         auto deallocate(void *p, std::size_t chunkSize) -> void
         {
             std::unique_lock<std::mutex> lock(thread_protection);
@@ -99,8 +99,10 @@ namespace pool
             }
         }
 
-    protected:
-        static auto adjust_chunk_size(std::size_t chunkSize) noexcept -> std::size_t
+
+
+    public:
+        static constexpr auto adjust_chunk_size(std::size_t chunkSize) noexcept -> std::size_t
         {
             std::size_t chunk_size;
             if (chunkSize < 8)
@@ -114,7 +116,7 @@ namespace pool
             return chunk_size;
         }
 
-        static auto usable_size_from_chunk_size(std::size_t chunkSize) noexcept -> std::size_t
+        static constexpr auto usable_size_from_chunk_size(std::size_t chunkSize) noexcept -> std::size_t
         {
             auto usableSize = chunkSize * 1000;
 
@@ -123,7 +125,6 @@ namespace pool
 
             return usableSize;
         }
-
 
 #ifdef REPORT_ALLOCATIONS
         MP_NODISCARD const reporter_type &reporter() const noexcept
@@ -232,13 +233,11 @@ namespace pool
             if (global_allocator::_global)
             {
 
-
                 --global_allocator::_global->count_ref;
 
 #ifdef REPORT_ALLOCATIONS
                 global_allocator::_global->reporter().sub_ref_count(global_allocator::_global->count_ref);
 #endif /*REPORT_ALLOCATIONS*/
-
 
                 if (global_allocator::_global->count_ref <= 0)
                 {
@@ -249,7 +248,7 @@ namespace pool
                         global_allocator::_global->global_block.release(block);
                     }
 
-                   delete global_allocator::_global;
+                    delete global_allocator::_global;
                     global_allocator::_global = nullptr;
                 }
             }
@@ -340,7 +339,14 @@ namespace pool
 
             global_allocator::_global->deallocate(p, chunk_size);
         }
+
+        static auto get_global_allocator() -> auto
+        {
+            return global_allocator::_global;
+        }
     };
+
+
 #if defined(REPORT_ALLOCATIONS) && defined(CHECK_MEMORY_LEAK)
     template <class T, class U, typename R, typename P>
     bool operator==(const pool_allocator<T, R, P> &, const pool_allocator<U, R, P> &)

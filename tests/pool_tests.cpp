@@ -513,3 +513,47 @@ TEST_CASE("Allocator vector")
     CHECK(u64v[1] == 0xaaffbbccddffbbccull);
     CHECK(u64v[2] == 0xbbffbbccddffbbccull);
 }
+
+static int destructor_calls = 0;
+
+struct ConstructorTest
+{
+    ConstructorTest() :
+        _internal{ 0x7A000102 }
+    {
+
+    }
+
+    explicit ConstructorTest(int v) :
+        _internal{ v }
+    {
+
+    }
+
+    ~ConstructorTest()
+    {
+        ++destructor_calls;
+        std::cout << "destroyed\n\n";
+    }
+
+    int _internal { 0 };
+};
+
+
+TEST_CASE("Class constructor")
+{
+    destructor_calls = 0;
+    std::vector<ConstructorTest, pool_iostream_reporter<ConstructorTest>> test;
+
+    test.emplace_back();
+    test.emplace_back(0x7AAA0122);
+    test.emplace_back(0x7ABB0133);
+
+    CHECK(test.size() == 3);
+    CHECK(test[0]._internal == 0x7A000102);
+    CHECK(test[1]._internal == 0x7AAA0122);
+    CHECK(test[2]._internal == 0x7ABB0133);
+
+    CHECK(destructor_calls == 3);
+}
+
