@@ -103,6 +103,9 @@ namespace scrp
 
     protected:
         auto insert_attribute(const sc_string &name, const sc_string &value) -> void;
+        inline auto insert_character_to_string(sc_string &name, const sc_string &str) -> void;
+        inline auto insert_character_to_string(sc_string &name, std::string_view str) -> void;
+        inline auto insert_character_to_string(sc_string &name, char_type ch) -> void;
         [[nodiscard]] auto is_next_char_eof(const sc_string::iterator &pos) const -> bool;
         [[nodiscard]] static auto is_char_alpha(scrp::char_type ch) noexcept -> bool;
         [[nodiscard]] static auto is_char_lower_alpha(scrp::char_type ch) noexcept -> bool;
@@ -116,6 +119,7 @@ namespace scrp
         [[nodiscard]] static auto is_control_character(int64_t codepoint) noexcept -> bool;
         [[nodiscard]] static auto to_lower(scrp::char_type ch) noexcept -> scrp::char_type;
         [[nodiscard]] static auto string_to_lower(sc_string &str) noexcept -> sc_string;
+
 
     protected:
         [[nodiscard]] auto is_return_state_attribute() -> bool;
@@ -202,6 +206,10 @@ namespace scrp
             return token_cast<CharacterToken>(tok);
         }
 
+        static inline auto cdata_token_cast(Token *tok) -> CDATAToken *
+        {
+            return token_cast<CDATAToken>(tok);
+        }
 
 
     private:

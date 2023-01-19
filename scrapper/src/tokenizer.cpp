@@ -594,6 +594,26 @@ auto scrp::Tokenizer::emit_token(Token *token) noexcept -> void
         release_token(token);
 }
 
+auto scrp::Tokenizer::insert_character_to_string(sc_string &name, const sc_string &str) -> void
+{
+    for (const auto &ch : str)
+        insert_character_to_string(name, ch);
+}
+
+auto scrp::Tokenizer::insert_character_to_string(sc_string &name, std::string_view str) -> void
+{
+    for (const auto &ch : str)
+        insert_character_to_string(name, ch);
+}
+
+auto scrp::Tokenizer::insert_character_to_string(sc_string &name, char_type ch) -> void
+{
+    if (is_control_character(ch))
+        emit_error(parser_error_type::control_character_in_input_stream);
+
+    name += ch;
+}
+
 auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
 {
     switch (stateChange)
@@ -627,6 +647,14 @@ auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
             [[fallthrough]];
         case States::BeforeDOCTYPESystemIdentifier:
             [[fallthrough]];
+        case States::DOCTYPEPublicIdentifierSQ:
+            [[fallthrough]];
+        case States::DOCTYPEPublicIdentifierDQ:
+            [[fallthrough]];
+        case States::DOCTYPESystemIdentifierSQ:
+            [[fallthrough]];
+        case States::DOCTYPESystemIdentifierDQ:
+            [[fallthrough]];
         case States::BogusDOCTYPE:
             emit_error(parser_error_type::eof_in_doctype);
             emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
@@ -650,12 +678,8 @@ auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
         case States::CommentLessThanSignBangDash: [[fallthrough]];
         case States::CommentLessThanSignBangDashDash: [[fallthrough]];
         case States::CommentEndBang: [[fallthrough]];
-        case States::DOCTYPEPublicIdentifierDQ: [[fallthrough]];
-        case States::DOCTYPEPublicIdentifierSQ: [[fallthrough]];
         case States::AfterDOCTYPEPublicIdentifier: [[fallthrough]];
         case States::BetweenDOCTYPEPublicAndSystemIdentifiers: [[fallthrough]];
-        case States::DOCTYPESystemIdentifierDQ: [[fallthrough]];
-        case States::DOCTYPESystemIdentifierSQ: [[fallthrough]];
         case States::AfterDOCTYPESystemIdentifier: [[fallthrough]];
         case States::CDATASection: [[fallthrough]];
         case States::CDATASectionBracket: [[fallthrough]];
@@ -811,7 +835,7 @@ auto scrp::Tokenizer::named_character_reference(sc_string::iterator &pos, States
         {
             // Not an error, just keep push the data in the
             const sc_string to_token_value = sc_string { "&" } + _impl->named_reference;
-            _impl->extra_token_data_1 += to_token_value;
+            insert_character_to_string(_impl->extra_token_data_1, to_token_value);
 
             // Go back to the return state
             // since is_return_state_attribute() -> true; it is certain that _impl->state is not empty
@@ -837,7 +861,7 @@ auto scrp::Tokenizer::named_character_reference(sc_string::iterator &pos, States
     {
         if (is_return_state_attribute())
         {
-            _impl->extra_token_data_1 += current_ref.utf8_encoding;
+            insert_character_to_string(_impl->extra_token_data_1, current_ref.utf8_encoding);
 
             // Go back to the return state
             // since is_return_state_attribute() -> true; it is certain that _impl->state is not empty
@@ -881,7 +905,7 @@ auto scrp::Tokenizer::hexadecimal_character_reference_start(sc_string::iterator 
             stateChange = States::Data;
 
         if (stateChange != States::Data)
-            _impl->extra_token_data_1 += *pos;
+            insert_character_to_string(_impl->extra_token_data_1, *pos);
 
         --pos;
     }
@@ -903,7 +927,7 @@ auto scrp::Tokenizer::decimal_character_reference_start(sc_string::iterator &pos
             stateChange = States::Data;
 
         if (stateChange != States::Data)
-            _impl->extra_token_data_1 += *pos;
+            insert_character_to_string(_impl->extra_token_data_1, *pos);
 
         --pos;
     }
@@ -1025,7 +1049,7 @@ auto scrp::Tokenizer::numeric_character_reference_end(sc_string::iterator &pos, 
     const auto utf8_character_reference = encoding::rt_to_utf8(_impl->numeric_reference);
     if (stateChange != States::Data)
     {
-        _impl->extra_token_data_1 += encoding::rt_to_view(utf8_character_reference);
+        insert_character_to_string(_impl->extra_token_data_1, encoding::rt_to_view(utf8_character_reference));
     }
     else
     {
@@ -1042,7 +1066,7 @@ auto scrp::Tokenizer::ambiguous_ampersand(sc_string::iterator &pos, States &stat
     else
     {
         const sc_string to_token_value = sc_string { "&" } + _impl->named_reference;
-        _impl->extra_token_data_1 += to_token_value;
+        insert_character_to_string(_impl->extra_token_data_1, to_token_value);
     }
 
     if (!_impl->state.empty() && _impl->state.top() != States::Data)
@@ -1059,6 +1083,7 @@ auto scrp::Tokenizer::markup_declaration_open(sc_string::iterator &pos, States &
     sc_string markup_name;
     markup_name.reserve(32);
     bool test_for_comment = false;
+    bool keep_testing     = true;
 
     static constexpr std::string_view _doctype { "doctype" };
     static constexpr std::string_view _cdata { "[CDATA[" };
@@ -1066,10 +1091,9 @@ auto scrp::Tokenizer::markup_declaration_open(sc_string::iterator &pos, States &
     for (; pos != _impl->data.end(); ++pos)
     {
         const auto &ch = *pos;
-        if (ch == '-' && !test_for_comment)
-            test_for_comment = true;
-        else if (ch == '-' && test_for_comment)
+        if (ch == '-' && !is_next_char_eof(pos) && *std::next(pos) == '-')
         {
+            ++pos;
             stateChange = States::CommentStart;
             return;
         }
@@ -1098,10 +1122,12 @@ auto scrp::Tokenizer::markup_declaration_open(sc_string::iterator &pos, States &
             }
             else
             {
+
                 emit_error(parser_error_type::incorrectly_opened_comment);
                 stateChange = States::BogusComment;
                 markup_name.pop_back();
-                _impl->current_token_data = markup_name;
+                _impl->current_token_data.clear();
+                insert_character_to_string(_impl->current_token_data, markup_name);
                 --pos;
                 return;
             }
@@ -1119,10 +1145,10 @@ auto scrp::Tokenizer::bogus_comment(sc_string::iterator &pos, States &stateChang
             break;
         case '0':
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->current_token_data += encoding::_sv_invalid;
+            insert_character_to_string(_impl->current_token_data, encoding::_sv_invalid);
             break;
         default:
-            _impl->current_token_data += *pos;
+            insert_character_to_string(_impl->current_token_data, *pos);
     }
 }
 
@@ -1158,7 +1184,7 @@ auto scrp::Tokenizer::comment_start_dash(sc_string::iterator &pos, scrp::States 
             break;
         default:
             --pos;
-            _impl->current_token_data += "-";
+            insert_character_to_string(_impl->current_token_data, '-');
             stateChange = States::Comment;
             break;
     }
@@ -1169,7 +1195,7 @@ auto scrp::Tokenizer::comment(sc_string::iterator &pos, scrp::States &stateChang
     switch (*pos)
     {
         case '<':
-            _impl->current_token_data += *pos;
+            insert_character_to_string(_impl->current_token_data, *pos);
             stateChange = States::CommentLessThanSign;
             break;
         case '-':
@@ -1177,10 +1203,10 @@ auto scrp::Tokenizer::comment(sc_string::iterator &pos, scrp::States &stateChang
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->current_token_data += encoding::_sv_invalid;
+            insert_character_to_string(_impl->current_token_data, encoding::_sv_invalid);
             break;
         default:
-            _impl->current_token_data += *pos;
+            insert_character_to_string(_impl->current_token_data, *pos);
     }
 }
 
@@ -1189,11 +1215,11 @@ auto scrp::Tokenizer::comment_less_than_sign(sc_string::iterator &pos, scrp::Sta
     switch (*pos)
     {
         case '!':
-            _impl->current_token_data += *pos;
+            insert_character_to_string(_impl->current_token_data, *pos);
             stateChange = States::CommentLessThanSignBang;
             break;
         case '<':
-            _impl->current_token_data += *pos;
+            insert_character_to_string(_impl->current_token_data, *pos);
             break;
         default:
             --pos;
@@ -1225,15 +1251,17 @@ auto scrp::Tokenizer::comment_less_than_sign_bang_dash(sc_string::iterator &pos,
             --pos;
             stateChange = States::Comment;
     }
-}
 
-auto scrp::Tokenizer::comment_less_than_sign_bang_dash_dash(sc_string::iterator &pos, States &stateChange) -> void
-{
     if (is_next_char_eof(pos))
     {
         comment_end(pos, stateChange);
         return;
     }
+}
+
+auto scrp::Tokenizer::comment_less_than_sign_bang_dash_dash(sc_string::iterator &pos, States &stateChange) -> void
+{
+
 
     switch (*pos)
     {
@@ -1245,6 +1273,12 @@ auto scrp::Tokenizer::comment_less_than_sign_bang_dash_dash(sc_string::iterator 
             emit_error(parser_error_type::nested_comment);
             --pos;
             stateChange = States::CommentEnd;
+    }
+
+    if (is_next_char_eof(pos))
+    {
+        comment_end(pos, stateChange);
+        return;
     }
 }
 
@@ -1264,7 +1298,7 @@ auto scrp::Tokenizer::comment_end_dash(sc_string::iterator &pos, scrp::States &s
             stateChange = States::CommentEnd;
             break;
         default:
-            _impl->current_token_data += *pos;
+            insert_character_to_string(_impl->current_token_data, *pos);
             --pos;
             stateChange = States::Comment;
     }
@@ -1272,6 +1306,9 @@ auto scrp::Tokenizer::comment_end_dash(sc_string::iterator &pos, scrp::States &s
 
 auto scrp::Tokenizer::comment_end(sc_string::iterator &pos, scrp::States &stateChange) -> void
 {
+
+
+    using namespace std::string_view_literals;
     switch (*pos)
     {
         case '>':
@@ -1282,21 +1319,30 @@ auto scrp::Tokenizer::comment_end(sc_string::iterator &pos, scrp::States &stateC
             stateChange = States::CommentEndBang;
             break;
         case '-':
-            _impl->current_token_data += *pos;
+            insert_character_to_string(_impl->current_token_data, *pos);
             break;
         default:
             --pos;
-            _impl->current_token_data += "--";
+            insert_character_to_string(_impl->current_token_data, "--"sv);
             stateChange = States::Comment;
+    }
+
+    if(is_next_char_eof(pos) && stateChange != States::Data && stateChange != States::CommentEndBang && stateChange != States::Comment )
+    {
+        emit_error(parser_error_type::eof_in_comment);
+        emit_comment_token(_impl->current_token_data);
+        emit_eof_token();
+        return;
     }
 }
 
 auto scrp::Tokenizer::comment_end_bang(sc_string::iterator &pos, States &stateChange) -> void
 {
+    using namespace std::string_view_literals;
     switch (*pos)
     {
         case '-':
-            _impl->current_token_data += "--!";
+            insert_character_to_string(_impl->current_token_data, "--!"sv);
             stateChange = States::CommentEndDash;
             break;
         case '>':
@@ -1305,7 +1351,7 @@ auto scrp::Tokenizer::comment_end_bang(sc_string::iterator &pos, States &stateCh
             stateChange = States::Data;
             break;
         default:
-            _impl->current_token_data += "--!";
+            insert_character_to_string(_impl->current_token_data, "--!"sv);
             --pos;
             stateChange = States::Comment;
     }
@@ -1347,7 +1393,7 @@ auto scrp::Tokenizer::before_doctype_name(sc_string::iterator &pos, States &stat
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->current_token_data += encoding::_sv_invalid;
+            insert_character_to_string(_impl->current_token_data, encoding::_sv_invalid);
             stateChange = States::DOCTYPEName;
             break;
         case '>':
@@ -1359,7 +1405,7 @@ auto scrp::Tokenizer::before_doctype_name(sc_string::iterator &pos, States &stat
             auto ch = *pos;
             if (is_char_upper_alpha(ch))
                 ch = to_lower(ch);
-            _impl->current_token_data += ch;
+            insert_character_to_string(_impl->current_token_data, ch);
             stateChange = States::DOCTYPEName;
     }
 }
@@ -1383,10 +1429,10 @@ auto scrp::Tokenizer::doctype_name(sc_string::iterator &pos, scrp::States &state
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->current_token_data += encoding::_sv_invalid;
+            insert_character_to_string(_impl->current_token_data, encoding::_sv_invalid);
             break;
         default:
-            _impl->current_token_data += to_lower(*pos);
+            insert_character_to_string(_impl->current_token_data, to_lower(*pos));
     }
 }
 
@@ -1411,7 +1457,7 @@ auto scrp::Tokenizer::after_doctype_name(sc_string::iterator &pos, scrp::States 
             stateChange = States::Data;
             break;
         default:
-            _impl->extra_token_data_0 += *pos;
+            insert_character_to_string(_impl->extra_token_data_0, *pos);
             if (_impl->extra_token_data_0.size() <= _public.size() && string_to_lower(_impl->extra_token_data_0) == _public.substr(0, _impl->extra_token_data_0.size()))
             {
                 if (string_to_lower(_impl->extra_token_data_0) == _public)
@@ -1513,7 +1559,8 @@ auto scrp::Tokenizer::doctype_public_identifier_dq(sc_string::iterator &pos, scr
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->extra_token_data_0 += encoding::_sv_invalid;
+            insert_character_to_string(_impl->extra_token_data_0, encoding::_sv_invalid);
+            ;
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_public_identifier);
@@ -1521,10 +1568,10 @@ auto scrp::Tokenizer::doctype_public_identifier_dq(sc_string::iterator &pos, scr
             stateChange = States::Data;
             break;
         default:
-            _impl->extra_token_data_0 += *pos;
+            insert_character_to_string(_impl->extra_token_data_0, *pos);
     }
 
-    if (is_next_char_eof(pos) && stateChange != States::Data)
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_doctype);
         emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
@@ -1536,7 +1583,6 @@ auto scrp::Tokenizer::doctype_public_identifier_dq(sc_string::iterator &pos, scr
 
 auto scrp::Tokenizer::doctype_public_identifier_sq(sc_string::iterator &pos, scrp::States &stateChange) -> void
 {
-
     switch (*pos)
     {
         case '\'':
@@ -1544,7 +1590,8 @@ auto scrp::Tokenizer::doctype_public_identifier_sq(sc_string::iterator &pos, scr
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->extra_token_data_0 += encoding::_sv_invalid;
+            insert_character_to_string(_impl->extra_token_data_0, encoding::_sv_invalid);
+            ;
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_public_identifier);
@@ -1552,13 +1599,14 @@ auto scrp::Tokenizer::doctype_public_identifier_sq(sc_string::iterator &pos, scr
             stateChange = States::Data;
             break;
         default:
-            _impl->extra_token_data_0 += *pos;
+            insert_character_to_string(_impl->extra_token_data_0, *pos);
     }
 
-    if (is_next_char_eof(pos) && stateChange != States::Data)
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
+        if (stateChange != States::Data)
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
         emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
@@ -1591,6 +1639,10 @@ auto scrp::Tokenizer::after_doctype_public_identifier(sc_string::iterator &pos, 
             stateChange = States::DOCTYPESystemIdentifierSQ;
             break;
         default:
+            {
+                if (is_control_character(*pos))
+                    emit_error(parser_error_type::control_character_in_input_stream);
+            }
             emit_error(parser_error_type::missing_quote_before_doctype_system_identifier);
             --pos;
             stateChange = States::BogusDOCTYPE;
@@ -1718,16 +1770,17 @@ auto scrp::Tokenizer::doctype_system_identifier_dq(sc_string::iterator &pos, scr
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            insert_character_to_string(_impl->extra_token_data_1, encoding::_sv_invalid);
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_system_identifier);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
             stateChange = States::Data;
             break;
         default:
-            _impl->extra_token_data_1 += *pos;
+            insert_character_to_string(_impl->extra_token_data_1, *pos);
     }
-    if (is_next_char_eof(pos) && stateChange != States::Data)
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_doctype);
         emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
@@ -1746,16 +1799,17 @@ auto scrp::Tokenizer::doctype_system_identifier_sq(sc_string::iterator &pos, scr
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            insert_character_to_string(_impl->extra_token_data_1, encoding::_sv_invalid);
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_system_identifier);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
             stateChange = States::Data;
             break;
         default:
-            _impl->extra_token_data_1 += *pos;
+            insert_character_to_string(_impl->extra_token_data_1, *pos);
     }
-    if (is_next_char_eof(pos) && stateChange != States::Data)
+    if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_doctype);
         emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
@@ -1821,7 +1875,7 @@ auto scrp::Tokenizer::cdata_section(sc_string::iterator &pos, scrp::States &stat
             stateChange = States::CDATASectionBracket;
             break;
         default:
-            _impl->current_token_data += *pos;
+            insert_character_to_string(_impl->current_token_data, *pos);
     }
 
     if (is_next_char_eof(pos))
@@ -1840,7 +1894,7 @@ auto scrp::Tokenizer::cdata_section_bracket(sc_string::iterator &pos, scrp::Stat
             stateChange = States::CDATASectionEnd;
             break;
         default:
-            _impl->current_token_data += ']';
+            insert_character_to_string(_impl->current_token_data, ']');
             stateChange = States::CDATASection;
             --pos;
     }
@@ -1848,17 +1902,18 @@ auto scrp::Tokenizer::cdata_section_bracket(sc_string::iterator &pos, scrp::Stat
 
 auto scrp::Tokenizer::cdata_section_end(sc_string::iterator &pos, scrp::States &stateChange) -> void
 {
+    using namespace std::string_view_literals;
     switch (*pos)
     {
         case ']':
-            _impl->current_token_data += ']';
+            insert_character_to_string(_impl->current_token_data, ']');
             break;
         case '>':
             emit_cdata_token(_impl->current_token_data);
             stateChange = States::Data;
             break;
         default:
-            _impl->current_token_data += "]]";
+            insert_character_to_string(_impl->current_token_data, "]]"sv);
             stateChange = States::CDATASection;
             --pos;
     }
@@ -1913,11 +1968,11 @@ auto scrp::Tokenizer::tag_name(sc_string::iterator &pos, scrp::States &stateChan
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->current_token_data += encoding::_sv_invalid;
+            insert_character_to_string(_impl->current_token_data, encoding::_sv_invalid);
         default:
             {
                 const auto ch = to_lower(*pos);
-                _impl->current_token_data += ch;
+                insert_character_to_string(_impl->current_token_data, ch);
             }
     }
 
@@ -1949,8 +2004,9 @@ auto scrp::Tokenizer::before_attribute_name(sc_string::iterator &pos, States &st
             break;
         case '=':
             emit_error(parser_error_type::unexpected_equals_sign_before_attribute_name);
-            _impl->extra_token_data_0 = *pos;
-            stateChange               = States::AttributeName;
+            _impl->extra_token_data_0.clear();
+            insert_character_to_string(_impl->extra_token_data_0, *pos);
+            stateChange = States::AttributeName;
             break;
         default:
             _impl->extra_token_data_0.clear();
@@ -1987,7 +2043,8 @@ auto scrp::Tokenizer::attribute_name(sc_string::iterator &pos, States &stateChan
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->extra_token_data_0 += encoding::_sv_invalid;
+            insert_character_to_string(_impl->extra_token_data_0, encoding::_sv_invalid);
+            ;
             break;
         case '\"':
             [[fallthrough]];
@@ -1998,7 +2055,7 @@ auto scrp::Tokenizer::attribute_name(sc_string::iterator &pos, States &stateChan
             [[fallthrough]];
         default:
             const auto ch = to_lower(*pos);
-            _impl->extra_token_data_0 += ch;
+            insert_character_to_string(_impl->extra_token_data_0, ch);
     }
 
     if (is_next_char_eof(pos))
@@ -2089,10 +2146,11 @@ auto scrp::Tokenizer::attribute_value_dq(sc_string::iterator &pos, States &state
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            insert_character_to_string(_impl->extra_token_data_1, encoding::_sv_invalid);
+            ;
             break;
         default:
-            _impl->extra_token_data_1 += *pos;
+            insert_character_to_string(_impl->extra_token_data_1, *pos);
     }
 
     if (is_next_char_eof(pos))
@@ -2115,10 +2173,11 @@ auto scrp::Tokenizer::attribute_value_sq(sc_string::iterator &pos, States &state
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            insert_character_to_string(_impl->extra_token_data_1, encoding::_sv_invalid);
+            ;
             break;
         default:
-            _impl->extra_token_data_1 += *pos;
+            insert_character_to_string(_impl->extra_token_data_1, *pos);
     }
 
     if (is_next_char_eof(pos))
@@ -2158,7 +2217,7 @@ auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States 
             break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
-            _impl->extra_token_data_1 += encoding::_sv_invalid;
+            insert_character_to_string(_impl->extra_token_data_1, encoding::_sv_invalid);
             break;
         case '\"':
             [[fallthrough]];
@@ -2172,7 +2231,7 @@ auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States 
             emit_error(parser_error_type::unexpected_character_in_unquoted_attribute_value);
             [[fallthrough]];
         default:
-            _impl->extra_token_data_1 += *pos;
+            insert_character_to_string(_impl->extra_token_data_1, *pos);
     }
 
     if (is_next_char_eof(pos))
