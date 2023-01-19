@@ -533,7 +533,6 @@ struct ConstructorTest
     ~ConstructorTest()
     {
         ++destructor_calls;
-        std::cout << "destroyed\n\n";
     }
 
     int _internal { 0 };
