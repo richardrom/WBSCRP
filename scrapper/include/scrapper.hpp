@@ -66,64 +66,6 @@ namespace scrp
     extern bool initialize();
     extern bool is_initialized();
 
-    // HTML5 Conformant states
-    enum class States
-    {
-        Data,
-        CharacterReference,
-        NamedCharacterReference,
-        NumericCharacterReference,
-        HexadecimalCharacterReferenceStart,
-        DecimalCharacterReferenceStart,
-        HexadecimalCharacterReference,
-        DecimalCharacterReference,
-        NumericCharacterReferenceEnd,
-        AmbiguousAmpersand,
-        TagOpen,
-        MarkupDeclarationOpen,
-        CommentStart,
-        CommentEnd,
-        BogusComment,
-        CommentStartDash,
-        CommentLessThanSign,
-        CommentLessThanSignBang,
-        CommentLessThanSignBangDash,
-        CommentLessThanSignBangDashDash,
-        CommentEndDash,
-        CommentEndBang,
-        Comment,
-        DOCTYPE,
-        BeforeDOCTYPEName,
-        DOCTYPEName,
-        AfterDOCTYPEName,
-        AfterDOCTYPEPublicKeyword,
-        BeforeDOCTYPEPublicIdentifier,
-        DOCTYPEPublicIdentifierDQ,
-        DOCTYPEPublicIdentifierSQ,
-        AfterDOCTYPEPublicIdentifier,
-        BetweenDOCTYPEPublicAndSystemIdentifiers,
-        AfterDOCTYPESystemKeyword,
-        BeforeDOCTYPESystemIdentifier,
-        DOCTYPESystemIdentifierDQ,
-        DOCTYPESystemIdentifierSQ,
-        AfterDOCTYPESystemIdentifier,
-        BogusDOCTYPE,
-        CDATASection,
-        CDATASectionBracket,
-        CDATASectionEnd,
-        EndTagOpen,
-        TagName,
-        BeforeAttributeName,
-        SelfClosingStartTag,
-        AttributeName,
-        AfterAttributeName,
-        BeforeAttributeValue,
-        AttributeValueDQ,
-        AttributeValueSQ,
-        AttributeValueUnquoted,
-        AfterAttributeValueQuoted
-    };
-
     enum class TokenType
     {
         Comment,
@@ -156,7 +98,7 @@ namespace scrp
     {
         inline explicit CommentToken(sc_string cmt) :
             Token(TokenType::Comment),
-            comment {std::move( cmt )} { }
+            comment { std::move(cmt) } { }
         sc_string comment;
     };
 
@@ -165,27 +107,43 @@ namespace scrp
 
         inline explicit DOCTYPEToken(sc_string nm) :
             Token(TokenType::DOCTYPE),
-            name {std::move( nm )} { }
+            name { std::move(nm) } { }
+        inline DOCTYPEToken(sc_string nm, bool quirks_flag) :
+            Token(TokenType::DOCTYPE),
+            name { std::move(nm) },
+            force_quirks_flag { quirks_flag } { }
         inline DOCTYPEToken(sc_string nm, sc_string public_id_name) :
             Token(TokenType::DOCTYPE),
-            name {std::move( nm )},
-            public_identifier_name {std::move( public_id_name )} { }
+            name { std::move(nm) },
+            public_identifier_name { std::move(public_id_name) } { }
+        inline DOCTYPEToken(sc_string nm, sc_string public_id_name, bool quirks_flag) :
+            Token(TokenType::DOCTYPE),
+            name { std::move(nm) },
+            public_identifier_name { std::move(public_id_name) },
+            force_quirks_flag { quirks_flag } { }
         inline DOCTYPEToken(sc_string nm, sc_string public_id_name, sc_string system_id_name) :
             Token(TokenType::DOCTYPE),
-            name {std::move( nm )},
-            public_identifier_name {std::move( public_id_name )},
-            system_identifier_name {std::move( system_id_name )} { }
+            name { std::move(nm) },
+            public_identifier_name { std::move(public_id_name) },
+            system_identifier_name { std::move(system_id_name) } { }
+        inline DOCTYPEToken(sc_string nm, sc_string public_id_name, sc_string system_id_name, bool quirks_flag) :
+            Token(TokenType::DOCTYPE),
+            name { std::move(nm) },
+            public_identifier_name { std::move(public_id_name) },
+            system_identifier_name { std::move(system_id_name) },
+            force_quirks_flag { quirks_flag } { }
 
         sc_string name;
         sc_string public_identifier_name;
         sc_string system_identifier_name;
+        bool force_quirks_flag { false };
     };
 
     struct CDATAToken : public Token
     {
         inline explicit CDATAToken(sc_string data) :
             Token(TokenType::CDATA),
-            cdata {std::move( data )} { }
+            cdata { std::move(data) } { }
         sc_string cdata;
     };
 
@@ -193,7 +151,7 @@ namespace scrp
     {
         inline explicit CharacterToken(sc_string cp) :
             Token(TokenType::Character),
-            code_point {std::move( cp )} { }
+            code_point { std::move(cp) } { }
         sc_string code_point;
     };
 
@@ -207,22 +165,22 @@ namespace scrp
     {
         explicit TagToken(sc_string name) :
             Token(TokenType::Tag),
-            tag_name {std::move( name )} { }
+            tag_name { std::move(name) } { }
 
         explicit TagToken(sc_string name, const sc_unordered_map<sc_string, sc_string> &attrs) :
             Token(TokenType::Tag),
-            tag_name {std::move( name )},
+            tag_name { std::move(name) },
             attributes { attrs } { }
 
         explicit TagToken(sc_string name, bool self_close) :
             Token(TokenType::Tag),
-            tag_name {std::move( name )},
+            tag_name { std::move(name) },
             attributes {},
             self_closing { self_close } { }
 
         explicit TagToken(sc_string name, const sc_unordered_map<sc_string, sc_string> &attrs, bool self_close) :
             Token(TokenType::Tag),
-            tag_name {std::move( name )},
+            tag_name { std::move(name) },
             attributes { attrs },
             self_closing { self_close } { }
 

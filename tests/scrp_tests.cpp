@@ -213,7 +213,8 @@ TEST_CASE("Find reference benchmarks")
     CHECK((tok)->type == scrp::TokenType::DOCTYPE); \
     CHECK((tok)->name == scrp::sc_string((name_))); \
     CHECK((tok)->public_identifier_name == (pb_));  \
-    CHECK((tok)->system_identifier_name == (sy_));
+    CHECK((tok)->system_identifier_name == (sy_));  \
+    CHECK((tok)->force_quirks_flag == (ssv_));
 
 #define CHECK_COMMENT(tok, com_)                    \
     CHECK((tok)->type == scrp::TokenType::Comment); \
@@ -284,7 +285,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().size() == 1);
         REQUIRE(tok.tokens().size() == 2);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "", "", false);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "", "", true);
         CHECK(tok.tokens()[1]->type == scrp::TokenType::EndOfFile);
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_doctype);
     }
@@ -327,7 +328,7 @@ TEST_CASE("DOCTYPE Test")
         CHECK(tok.get_parse_errors().size() == 1);
         CHECK(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "", "", "", false);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "", "", "", true);
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_doctype_name);
     }
 
@@ -369,7 +370,7 @@ TEST_CASE("DOCTYPE Test")
         CHECK(tok.get_parse_errors().size() == 0);
         CHECK(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "-//W3C//DTD HTML Transitional 4.01//EN", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "-//W3C//DTD HTML Transitional 4.01//EN", "", false);
     }
 
     SECTION("DOCTYPE with EOF after PUBLIC")
@@ -410,7 +411,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().size() == 1);
         REQUIRE(tok.tokens().size() == 2);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "x", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "x", "", false);
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_doctype);
     }
 
@@ -424,7 +425,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().empty());
         REQUIRE(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "", "-//W3C//DTD HTML Transitional 4.01//EN", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "", "-//W3C//DTD HTML Transitional 4.01//EN", false);
     }
 
     SECTION("DOCTYPE with single-quoted systemId")
@@ -437,7 +438,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().empty());
         REQUIRE(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "-//W3C//DTD HTML Transitional 4.01//EN", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "-//W3C//DTD HTML Transitional 4.01//EN", "", false);
     }
 
     SECTION("DOCTYPE with publicId and systemId")
@@ -450,7 +451,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().empty());
         REQUIRE(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "-//W3C//DTD HTML Transitional 4.01//EN", "-//W3C//DTD HTML Transitional 4.01//EN", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "-//W3C//DTD HTML Transitional 4.01//EN", "-//W3C//DTD HTML Transitional 4.01//EN", false);
     }
 
     SECTION("DOCTYPE with > in double-quoted publicId")
@@ -862,7 +863,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().size() == 2);
         REQUIRE(tok.tokens().size() == 2);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "", "", false);
         CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[1]));
 
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_whitespace_after_doctype_public_keyword);
@@ -897,7 +898,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().size() == 3);
         REQUIRE(tok.tokens().size() == 2);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "", "", false);
         CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[1]));
 
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_whitespace_after_doctype_public_keyword);
@@ -951,7 +952,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().size() == 3);
         REQUIRE(tok.tokens().size() == 2);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "", "", false);
         CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[1]));
 
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_whitespace_after_doctype_public_keyword);
@@ -1109,7 +1110,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().size() == 3);
         REQUIRE(tok.tokens().size() == 2);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "?", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "?", "", false);
         CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[1]));
 
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_whitespace_before_doctype_name);
@@ -1127,7 +1128,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().size() == 3);
         REQUIRE(tok.tokens().size() == 2);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "@", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "@", "", false);
         CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[1]));
 
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_whitespace_before_doctype_name);
@@ -1145,7 +1146,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().size() == 3);
         REQUIRE(tok.tokens().size() == 2);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "A", "", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "a", "A", "", false);
         CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[1]));
 
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_whitespace_before_doctype_name);
@@ -1181,7 +1182,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().empty());
         REQUIRE(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "AbC", "XyZ", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "AbC", "XyZ", false);
     }
 
     SECTION("Doctype public case-sensitivity (2)")
@@ -1194,7 +1195,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().empty());
         REQUIRE(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "aBc", "xYz", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "aBc", "xYz", false);
     }
 
     SECTION("Doctype system case-sensitivity (1)")
@@ -1207,7 +1208,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().empty());
         REQUIRE(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "", "XyZ", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "", "XyZ", false);
     }
 
     SECTION("Doctype system case-sensitivity (2)")
@@ -1220,7 +1221,7 @@ TEST_CASE("DOCTYPE Test")
         REQUIRE(tok.get_parse_errors().empty());
         REQUIRE(tok.tokens().size() == 1);
 
-        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "", "xYz", true);
+        CHECK_DOCTYPE(scrp::Tokenizer::doctype_token_cast(tok.tokens()[0]), "html", "", "xYz", false);
     }
 }
 

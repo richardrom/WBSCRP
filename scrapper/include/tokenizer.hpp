@@ -19,6 +19,7 @@
 namespace scrp
 {
     class parser;
+    enum class States;
     class Tokenizer
     {
     public:

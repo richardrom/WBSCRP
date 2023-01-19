@@ -12,41 +12,104 @@
 #include "encoding_character_reference.hpp"
 #include "parser.hpp"
 
-struct scrp::Tokenizer::Impl
+namespace scrp
 {
-    explicit Impl(scrp::sc_string src) :
-        data { std::move(src) }
+    // HTML5 Conformant states
+    enum class States
     {
-        tokens.reserve(5000);
-        errors.reserve(100);
-        attributes.reserve(20);
+        Data,
+        CharacterReference,
+        NamedCharacterReference,
+        NumericCharacterReference,
+        HexadecimalCharacterReferenceStart,
+        DecimalCharacterReferenceStart,
+        HexadecimalCharacterReference,
+        DecimalCharacterReference,
+        NumericCharacterReferenceEnd,
+        AmbiguousAmpersand,
+        TagOpen,
+        MarkupDeclarationOpen,
+        CommentStart,
+        CommentEnd,
+        BogusComment,
+        CommentStartDash,
+        CommentLessThanSign,
+        CommentLessThanSignBang,
+        CommentLessThanSignBangDash,
+        CommentLessThanSignBangDashDash,
+        CommentEndDash,
+        CommentEndBang,
+        Comment,
+        DOCTYPE,
+        BeforeDOCTYPEName,
+        DOCTYPEName,
+        AfterDOCTYPEName,
+        AfterDOCTYPEPublicKeyword,
+        BeforeDOCTYPEPublicIdentifier,
+        DOCTYPEPublicIdentifierDQ,
+        DOCTYPEPublicIdentifierSQ,
+        AfterDOCTYPEPublicIdentifier,
+        BetweenDOCTYPEPublicAndSystemIdentifiers,
+        AfterDOCTYPESystemKeyword,
+        BeforeDOCTYPESystemIdentifier,
+        DOCTYPESystemIdentifierDQ,
+        DOCTYPESystemIdentifierSQ,
+        AfterDOCTYPESystemIdentifier,
+        BogusDOCTYPE,
+        CDATASection,
+        CDATASectionBracket,
+        CDATASectionEnd,
+        EndTagOpen,
+        TagName,
+        BeforeAttributeName,
+        SelfClosingStartTag,
+        AttributeName,
+        AfterAttributeName,
+        BeforeAttributeValue,
+        AttributeValueDQ,
+        AttributeValueSQ,
+        AttributeValueUnquoted,
+        AfterAttributeValueQuoted
+    };
 
-        current_token_data.reserve(64);
-        named_reference.reserve(64);
-        extra_token_data_0.reserve(64);
-        extra_token_data_1.reserve(64);
-        ambiguous_character_reference.reserve(64);
-    }
+    struct Tokenizer::Impl
+    {
+        explicit Impl(scrp::sc_string src) :
+            data { std::move(src) }
+        {
+            tokens.reserve(5000);
+            errors.reserve(100);
+            attributes.reserve(20);
 
-public:
-    sc_stack<States> state;
-    sc_vector<parser_error> errors;
-    sc_vector<Token *> tokens;
-    sc_unordered_map<sc_string, sc_string> attributes;
-    sc_string data;
-    sc_string current_token_data;
-    sc_string named_reference;
-    sc_string extra_token_data_0;
-    sc_string extra_token_data_1;
-    sc_string ambiguous_character_reference;
-    encoding::character_reference last_char_reference;
-    std::size_t current_position { 0 };
-    std::size_t current_line { 1 };
-    std::size_t line_offset { 0 };
-    parser *parser { nullptr };
-    uint32_t numeric_reference { 0 };
-    bool keep_tokens { false };
-};
+            current_token_data.reserve(64);
+            named_reference.reserve(64);
+            extra_token_data_0.reserve(64);
+            extra_token_data_1.reserve(64);
+            ambiguous_character_reference.reserve(64);
+        }
+
+    public:
+        sc_stack<States> state;
+        sc_vector<parser_error> errors;
+        sc_vector<Token *> tokens;
+        sc_unordered_map<sc_string, sc_string> attributes;
+        sc_string data;
+        sc_string current_token_data;
+        sc_string named_reference;
+        sc_string extra_token_data_0;
+        sc_string extra_token_data_1;
+        sc_string ambiguous_character_reference;
+        encoding::character_reference last_char_reference;
+        std::size_t current_position { 0 };
+        std::size_t current_line { 1 };
+        std::size_t line_offset { 0 };
+        parser *parser { nullptr };
+        uint32_t numeric_reference { 0 };
+        bool keep_tokens { false };
+        bool quirk_flag { true }; // only used in the bogus_doctype function and is set to false
+                                  // when After DOCTYPE system identifier state triggers the Bogus DOCTYPE state
+    };
+} // namespace scrp
 
 scrp::Tokenizer::Tokenizer(sc_string source) :
     _impl { new Impl(std::move(source)) }
@@ -657,7 +720,7 @@ auto scrp::Tokenizer::handle_eof_error(scrp::States stateChange) -> void
             [[fallthrough]];
         case States::BogusDOCTYPE:
             emit_error(parser_error_type::eof_in_doctype);
-            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, true);
             emit_eof_token();
             break;
         case States::Data: [[fallthrough]];
@@ -1262,7 +1325,6 @@ auto scrp::Tokenizer::comment_less_than_sign_bang_dash(sc_string::iterator &pos,
 auto scrp::Tokenizer::comment_less_than_sign_bang_dash_dash(sc_string::iterator &pos, States &stateChange) -> void
 {
 
-
     switch (*pos)
     {
         case '>':
@@ -1307,7 +1369,6 @@ auto scrp::Tokenizer::comment_end_dash(sc_string::iterator &pos, scrp::States &s
 auto scrp::Tokenizer::comment_end(sc_string::iterator &pos, scrp::States &stateChange) -> void
 {
 
-
     using namespace std::string_view_literals;
     switch (*pos)
     {
@@ -1327,7 +1388,7 @@ auto scrp::Tokenizer::comment_end(sc_string::iterator &pos, scrp::States &stateC
             stateChange = States::Comment;
     }
 
-    if(is_next_char_eof(pos) && stateChange != States::Data && stateChange != States::CommentEndBang && stateChange != States::Comment )
+    if (is_next_char_eof(pos) && stateChange != States::Data && stateChange != States::CommentEndBang && stateChange != States::Comment)
     {
         emit_error(parser_error_type::eof_in_comment);
         emit_comment_token(_impl->current_token_data);
@@ -1398,7 +1459,7 @@ auto scrp::Tokenizer::before_doctype_name(sc_string::iterator &pos, States &stat
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_name);
-            emit_doctype_token(_impl->current_token_data);
+            emit_doctype_token(_impl->current_token_data, true);
             stateChange = States::Data;
             break;
         default:
@@ -1509,7 +1570,7 @@ auto scrp::Tokenizer::after_doctype_public_keyword(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_public_identifier);
-            emit_doctype_token(_impl->current_token_data);
+            emit_doctype_token(_impl->current_token_data, true);
             stateChange = States::Data;
             break;
         default:
@@ -1540,7 +1601,7 @@ auto scrp::Tokenizer::before_doctype_public_identifier(sc_string::iterator &pos,
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_public_identifier);
-            emit_doctype_token(_impl->current_token_data);
+            emit_doctype_token(_impl->current_token_data, true);
             stateChange = States::Data;
             break;
         default:
@@ -1564,7 +1625,7 @@ auto scrp::Tokenizer::doctype_public_identifier_dq(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_public_identifier);
-            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, true);
             stateChange = States::Data;
             break;
         default:
@@ -1595,7 +1656,7 @@ auto scrp::Tokenizer::doctype_public_identifier_sq(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_public_identifier);
-            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, true);
             stateChange = States::Data;
             break;
         default:
@@ -1720,7 +1781,7 @@ auto scrp::Tokenizer::after_doctype_system_keyword(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_system_identifier);
-            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, true);
             stateChange = States::Data;
             break;
         default:
@@ -1751,7 +1812,7 @@ auto scrp::Tokenizer::before_doctype_system_identifier(sc_string::iterator &pos,
             break;
         case '>':
             emit_error(parser_error_type::missing_doctype_system_identifier);
-            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, true);
             stateChange = States::Data;
             break;
         default:
@@ -1774,7 +1835,7 @@ auto scrp::Tokenizer::doctype_system_identifier_dq(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_system_identifier);
-            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, true);
             stateChange = States::Data;
             break;
         default:
@@ -1783,7 +1844,7 @@ auto scrp::Tokenizer::doctype_system_identifier_dq(sc_string::iterator &pos, scr
     if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, true);
         emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
@@ -1803,7 +1864,7 @@ auto scrp::Tokenizer::doctype_system_identifier_sq(sc_string::iterator &pos, scr
             break;
         case '>':
             emit_error(parser_error_type::abrupt_doctype_system_identifier);
-            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, true);
             stateChange = States::Data;
             break;
         default:
@@ -1812,7 +1873,7 @@ auto scrp::Tokenizer::doctype_system_identifier_sq(sc_string::iterator &pos, scr
     if (is_next_char_eof(pos))
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, true);
         emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
@@ -1838,6 +1899,7 @@ auto scrp::Tokenizer::after_doctype_system_identifier(sc_string::iterator &pos, 
             break;
         default:
             emit_error(parser_error_type::unexpected_character_after_doctype_system_identifier);
+            _impl->quirk_flag = false;
             --pos;
             stateChange = States::BogusDOCTYPE;
     }
@@ -1845,7 +1907,7 @@ auto scrp::Tokenizer::after_doctype_system_identifier(sc_string::iterator &pos, 
     if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_doctype);
-        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+        emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, true);
         emit_eof_token();
         stateChange = States::Data; // Prevent the call to handle_eof_error()
         return;
@@ -1857,7 +1919,7 @@ auto scrp::Tokenizer::bogus_doctype(sc_string::iterator &pos, scrp::States &stat
     switch (*pos)
     {
         case '>':
-            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1);
+            emit_doctype_token(_impl->current_token_data, _impl->extra_token_data_0, _impl->extra_token_data_1, _impl->quirk_flag);
             stateChange = States::Data;
             break;
         case 0:
