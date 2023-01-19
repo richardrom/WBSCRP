@@ -39,9 +39,14 @@ namespace scrp
 #elif !defined(REPORT_ALLOCATIONS) && defined(CHECK_MEMORY_LEAK)
     template <typename T>
     using pool_allocator = pool::pool_allocator<T, pool::pool_iostream_reporter>;
+
+    template <typename T>
+    using fixed_memory_pool = pool::memory_pool<T, pool::pool_iostream_reporter>;
 #else
     template <typename T>
     using pool_allocator = pool::pool_allocator<T>;
+    template <typename T>
+    using fixed_memory_pool = pool::memory_pool<T>;
 #endif /*REPORT_ALLOCATIONS*/
     using sc_string = std::basic_string<char_type, std::char_traits<char_type>, pool_allocator<char_type>>;
 

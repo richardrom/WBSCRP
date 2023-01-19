@@ -39,7 +39,7 @@ namespace pool
 #if defined(REPORT_ALLOCATIONS) || defined(CHECK_MEMORY_LEAK)
     template <typename T, pool_reporter P, bool dest=true>
 #else
-    template <typename T>
+    template <typename T, bool dest=true>
 #endif /*REPORT_ALLOCATIONS*/
     struct memory_pool
     {
