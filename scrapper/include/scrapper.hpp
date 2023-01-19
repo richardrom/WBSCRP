@@ -170,10 +170,10 @@ namespace scrp
             Token(TokenType::DOCTYPE),
             name {std::move( nm )},
             public_identifier_name {std::move( public_id_name )} { }
-        inline DOCTYPEToken(sc_string nm, const sc_string &public_id_name, sc_string system_id_name) :
+        inline DOCTYPEToken(sc_string nm, sc_string public_id_name, sc_string system_id_name) :
             Token(TokenType::DOCTYPE),
             name {std::move( nm )},
-            public_identifier_name { public_id_name },
+            public_identifier_name {std::move( public_id_name )},
             system_identifier_name {std::move( system_id_name )} { }
 
         sc_string name;
