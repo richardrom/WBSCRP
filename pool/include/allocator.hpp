@@ -34,16 +34,16 @@ namespace pool
 #endif /*REPORT_ALLOCATIONS*/
 
 #if defined(REPORT_ALLOCATIONS) && defined(CHECK_MEMORY_LEAK)
-        using pool_type   = pool::memory_pool<void, P>; // The global pool will allocate actually void * and handle different blocks for different chunk sizes
-        using global_pool = pool::memory_pool<pool_type, P>;
+        using pool_type   = pool::memory_pool<void, P, false>; // The global pool will allocate actually void * and handle different blocks for different chunk sizes
+        using global_pool = pool::memory_pool<pool_type, P, false>;
         using this_type   = global_allocator<R, P>;
 #elif !defined(REPORT_ALLOCATIONS) && defined(CHECK_MEMORY_LEAK)
-        using pool_type   = pool::memory_pool<void, P>; // The global pool will allocate actually void * and handle different blocks for different chunk sizes
-        using global_pool = pool::memory_pool<pool_type, P>;
+        using pool_type   = pool::memory_pool<void, P, false>; // The global pool will allocate actually void * and handle different blocks for different chunk sizes
+        using global_pool = pool::memory_pool<pool_type, P, false>;
         using this_type   = global_allocator<P>;
 #else
-        using pool_type   = pool::memory_pool<void>; // The global pool will allocate actually void * and handle different blocks for different chunk sizes
-        using global_pool = pool::memory_pool<pool_type>;
+        using pool_type   = pool::memory_pool<void, false>; // The global pool will allocate actually void * and handle different blocks for different chunk sizes
+        using global_pool = pool::memory_pool<pool_type, false>;
         using this_type   = global_allocator;
 #endif /*REPORT_ALLOCATIONS*/
 
