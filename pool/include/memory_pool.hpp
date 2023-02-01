@@ -128,7 +128,7 @@ namespace pool
             reporter.allocate_block(*pBlock, block_size, chunk_size);
 #endif /*REPORT_ALLOCATIONS*/
 
-            memset((*pBlock)->_block, 0, block_size);
+            //memset((*pBlock)->_block, 0, block_size);
 
             // Init the free list
             (*pBlock)->next_free_chunk = static_cast<size_t *>((*pBlock)->_block);
@@ -298,11 +298,12 @@ namespace pool
                 // So, we only need to point used_block->next_free_chunk to this freed chunk
                 // and write zero to the address pointed by used_block->next_free_chunk
                 used_block->next_free_chunk  = reinterpret_cast<size_t *>(ptr);
-                *used_block->next_free_chunk = 0;
 
                 // Call the destructor
                 if constexpr (dest && std::is_destructible<T>::value && !std::is_trivially_destructible<T>::value)
                     ptr->~T();
+
+                *used_block->next_free_chunk = 0;
                 ptr = nullptr;
 
                 return; // We don't need the next code
