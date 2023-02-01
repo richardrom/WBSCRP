@@ -43,18 +43,37 @@ namespace scrp
     template <typename T>
     using fixed_memory_pool = pool::memory_pool<T, pool::pool_iostream_reporter>;
 #else
+
+#ifdef USE_STL_ALLOCATOR
+    template <typename T>
+    using pool_allocator = std::allocator<T>;
+
+    template <typename T>
+    using fixed_memory_pool = pool::memory_pool<T>;
+
+#else
     template <typename T>
     using pool_allocator = pool::pool_allocator<T>;
     template <typename T>
     using fixed_memory_pool = pool::memory_pool<T>;
+#endif /*USE_STL_ALLOCATOR*/
+
 #endif /*REPORT_ALLOCATIONS*/
-    using sc_string = std::basic_string<char_type, std::char_traits<char_type>, pool_allocator<char_type>>;
+
+#ifdef USE_STL_ALLOCATOR
+    using sc_string = std::string;
+#else
+    using sc_string         = std::basic_string<char_type, std::char_traits<char_type>, pool_allocator<char_type>>;
+#endif
 
     template <typename T>
     using sc_vector = std::vector<T, pool_allocator<T>>;
 
     template <typename T>
     using sc_stack = std::stack<T, std::deque<T, pool_allocator<T>>>;
+
+    template <typename T>
+    using sc_deque = std::deque<T, pool_allocator<T>>;
 
     template <typename Key, typename T>
     using sc_map = std::map<Key, T, std::less<Key>, pool_allocator<std::pair<const Key, T>>>;
@@ -144,6 +163,7 @@ namespace scrp
         inline explicit CDATAToken(sc_string data) :
             Token(TokenType::CDATA),
             cdata { std::move(data) } { }
+
         sc_string cdata;
     };
 
@@ -152,17 +172,15 @@ namespace scrp
         inline explicit CharacterToken(sc_string cp) :
             Token(TokenType::Character),
             code_point { std::move(cp) } { }
-        sc_string code_point;
-    };
 
-    struct EndTagToken : public Token
-    {
-        inline EndTagToken() :
-            Token(TokenType::EndTag) { }
+        sc_string code_point;
     };
 
     struct TagToken : public Token
     {
+        TagToken() :
+            Token(TokenType::EndTag) { }
+
         explicit TagToken(sc_string name) :
             Token(TokenType::Tag),
             tag_name { std::move(name) } { }
@@ -184,6 +202,11 @@ namespace scrp
             attributes { attrs },
             self_closing { self_close } { }
 
+        inline auto set_end_tag() -> void
+        {
+            type = TokenType::EndTag;
+        }
+
         sc_unordered_map<sc_string, sc_string> attributes;
         sc_string tag_name;
         bool self_closing { false };
@@ -194,7 +217,6 @@ namespace scrp
     extern fixed_memory_pool<DOCTYPEToken> *_pool_doctype_token;
     extern fixed_memory_pool<CDATAToken> *_pool_cdata_token;
     extern fixed_memory_pool<CharacterToken> *_pool_character_token;
-    extern fixed_memory_pool<EndTagToken> *_pool_endtag_token;
     extern fixed_memory_pool<TagToken> *_pool_tag_token;
 
     template <typename T>
@@ -230,12 +252,6 @@ namespace scrp
     inline auto get_token_pool<CharacterToken>() -> auto
     {
         return _pool_character_token;
-    }
-
-    template <>
-    inline auto get_token_pool<EndTagToken>() -> auto
-    {
-        return _pool_endtag_token;
     }
 
     template <>

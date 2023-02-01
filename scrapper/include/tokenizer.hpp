@@ -40,7 +40,8 @@ namespace scrp
         /// \note If this flag is set while the tokenizer is running, it will incur in undefined behavior
         auto release_tokens() -> void;
 
-        /// \brief Don't discard the tokens once they are passed to the parser
+        /// \brief Don't discard the tokens once they are passed to the parser.
+        /// \brief Performance of the tokenizer will be decreased if used. The function is intended for troubleshooting
         /// \note If this flag is set while the tokenizer is running, it will incur in undefined behavior
         auto keep_tokens() -> void;
 
@@ -121,7 +122,6 @@ namespace scrp
         [[nodiscard]] static auto to_lower(scrp::char_type ch) noexcept -> scrp::char_type;
         [[nodiscard]] static auto string_to_lower(sc_string &str) noexcept -> sc_string;
 
-
     protected:
         [[nodiscard]] auto is_return_state_attribute() -> bool;
 
@@ -133,21 +133,17 @@ namespace scrp
     protected:
         auto emit_token(Token *token) noexcept -> void;
         auto emit_error(parser_error_type type) noexcept -> void;
+        auto emit_end_tag_token() -> void;
 
         template <typename T, typename... Args>
         auto emit_token(Args... args) -> void
         {
-            emit_token( get_token_pool<T>()->alloc(args...) );
+            emit_token(get_token_pool<T>()->alloc(args...));
         }
 
         auto emit_eof_token()
         {
             emit_token<EOFToken>();
-        }
-
-        auto emit_end_tag_token()
-        {
-            emit_token<EndTagToken>();
         }
 
         template <typename... Args>
@@ -181,7 +177,7 @@ namespace scrp
         }
 
     public:
-        template<typename T>
+        template <typename T>
         static auto token_cast(Token *tok) -> T *
         {
             return static_cast<T *>(tok);
@@ -210,6 +206,11 @@ namespace scrp
         static inline auto cdata_token_cast(Token *tok) -> CDATAToken *
         {
             return token_cast<CDATAToken>(tok);
+        }
+
+        static inline auto tag_token_cast(Token *tok) -> TagToken *
+        {
+            return token_cast<TagToken>(tok);
         }
 
 

@@ -227,6 +227,22 @@ TEST_CASE("Find reference benchmarks")
 #define CHECK_EOF(tok) \
     CHECK((tok)->type == scrp::TokenType::EndOfFile);
 
+#define CHECK_TAG(tok, char_, self_)            \
+    CHECK((tok)->type == scrp::TokenType::Tag); \
+    CHECK((tok)->tag_name == (char_));          \
+    CHECK((tok)->self_closing == (self_));
+
+#define CHECK_EMPTY_ATTRIBUTES(tok) \
+    CHECK((tok)->attributes.empty());
+
+#define CHECK_ATTRIBUTES_SIZE(tok, size_) \
+    CHECK((tok)->attributes.size() == (size_));
+
+#define CHECK_END_TAG(tok, char_)                  \
+    CHECK((tok)->type == scrp::TokenType::EndTag); \
+    CHECK((tok)->tag_name == (char_));             \
+    CHECK((tok)->self_closing == false);
+
 TEST_CASE("DOCTYPE Test")
 {
 
@@ -1556,14 +1572,6 @@ TEST_CASE("HTML Comments")
         CHECK_COMMENT(scrp::Tokenizer::comment_token_cast(tok.tokens()[0]), " <!--test");
 
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::nested_comment);
-
-        /*
-                { "description" : "Nested comment",
-                    "input" : "<!-- <!--test-->",
-                    "output" : [[ "Comment", " <!--test" ]],
-                    "errors" : [
-                        { "code" : "nested-comment", "line" : 1, "col" : 10 }
-                    ] },*/
     }
 
     SECTION("Nested comment with extra <")
@@ -1579,14 +1587,1027 @@ TEST_CASE("HTML Comments")
         CHECK_COMMENT(scrp::Tokenizer::comment_token_cast(tok.tokens()[0]), " <<!--test");
 
         CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::nested_comment);
-
-        /*
-                { "description" : "Nested comment with extra <",
-                    "input" : "<!-- <<!--test-->",
-                    "output" : [[ "Comment", " <<!--test" ]],
-                    "errors" : [
-                        { "code" : "nested-comment", "line" : 1, "col" : 11 }
-                    ] },
-                */
     }
+}
+
+TEST_CASE("Tag tests")
+{
+    auto CHECK_ATTRIBUTES = [&](scrp::TagToken *tok, scrp::sc_unordered_map<scrp::sc_string, scrp::sc_string> &&data) -> void {
+        CHECK(tok->attributes == data);
+    };
+
+    scrp::initialize();
+    scrp::parser test_parser;
+
+    SECTION("Single Start Tag")
+    {
+        scrp::Tokenizer tok("<h>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_EMPTY_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]));
+    }
+
+    SECTION("Start/End Tag")
+    {
+        scrp::Tokenizer tok("<h></h>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 2);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_EMPTY_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]));
+        CHECK_END_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), "h");
+    }
+
+    SECTION("Empty end tag")
+    {
+        scrp::Tokenizer tok("</>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]));
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_end_tag_name);
+    }
+
+    SECTION("Empty start tag")
+    {
+        scrp::Tokenizer tok("<>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 2);
+
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[0]), "<>");
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[1]));
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::invalid_first_character_of_tag_name);
+    }
+
+    SECTION("Start Tag w/attribute: <t a='b'>")
+    {
+        scrp::Tokenizer tok("<t a='b'>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "t", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"a", "b"}
+        });
+    }
+
+    SECTION("Start Tag w/attribute: <t a=\"b\">")
+    {
+        scrp::Tokenizer tok("<t a=\"b\">");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "t", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"a", "b"}
+        });
+    }
+
+    SECTION("Start Tag w/attribute: <tg at='bb'>")
+    {
+        scrp::Tokenizer tok("<tg at='bb'>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "tg", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"at", "bb"}
+        });
+    }
+
+    SECTION("Start Tag w/attribute: <tg at=\"bb\">")
+    {
+        scrp::Tokenizer tok("<tg at=\"bb\">");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "tg", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"at", "bb"}
+        });
+    }
+
+    SECTION("Start Tag w/attribute: <tag attr='ibute'>")
+    {
+        scrp::Tokenizer tok("<tag attr='ibute'>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "tag", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"attr", "ibute"}
+        });
+    }
+
+    SECTION("Start Tag w/attribute: <tag attr=\"ibute\">")
+    {
+        scrp::Tokenizer tok("<tag attr=\"ibute\">");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "tag", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"attr", "ibute"}
+        });
+    }
+
+    SECTION("Start Tag w/attribute: <tag attr=\"ibute\">")
+    {
+        scrp::Tokenizer tok("<tag attr=\"ibute\">");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "tag", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"attr", "ibute"}
+        });
+    }
+
+    SECTION("Start Tag w/attribute: <tag a0=\"b0\" a1='b1' a2=\"b2\">")
+    {
+        scrp::Tokenizer tok(R"(<tag a0="b0" a1='b1' a2="b2">)");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "tag", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 3);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"a0", "b0"},
+                                                                              {"a1", "b1"},
+                                                                              {"a2", "b2"}
+        });
+    }
+
+    SECTION("Start Tag w/attribute no quote")
+    {
+        scrp::Tokenizer tok("<h a=b>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"a", "b"}
+        });
+    }
+
+    SECTION("Start Tag w/attributes no quote")
+    {
+        scrp::Tokenizer tok("<h a=b c=d>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 2);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"a", "b"}, {"c", "d"}
+        });
+    }
+
+
+    SECTION("Two unclosed start tags")
+    {
+        scrp::Tokenizer tok("<p>One<p>Two");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 5);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "p", false);
+        CHECK_EMPTY_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]));
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[1]), "One");
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[2]), "p", false);
+        CHECK_EMPTY_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[2]));
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[3]), "Two");
+        CHECK_EOF(scrp::Tokenizer::character_token_cast(tok.tokens()[4]));
+
+    }
+
+    SECTION("End Tag w/attribute")
+    {
+        scrp::Tokenizer tok("<h></h a='b'>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 2);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_EMPTY_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]));
+        CHECK_END_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), "h");
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::end_tag_with_attributes);
+
+    }
+
+    SECTION("Multiple atts no space")
+    {
+        scrp::Tokenizer tok("<h a='b'c='d'>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 2);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {
+                                                                              {"a", "b"},
+                                                                              {"c", "d"}
+        });
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_whitespace_between_attributes);
+    }
+
+    SECTION("Repeated attr")
+    {
+        scrp::Tokenizer tok("<h a='b' a='d'>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", "b"}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::duplicate_attribute);
+    }
+
+
+    SECTION("Close attribute/Open attribute")
+    {
+        scrp::Tokenizer tok("</h><d a=b>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 2);
+
+        CHECK_END_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h");
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), "d", false);
+
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), {{"a", "b"}});
+    }
+
+    SECTION("Start tag with no attributes but space before the greater-than sign")
+    {
+        scrp::Tokenizer tok("<h >");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 0);
+    }
+
+    SECTION("Empty attribute followed by uppercase attribute")
+    {
+        scrp::Tokenizer tok("<h a B=''>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 2);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", ""}, {"b", ""}});
+    }
+
+    SECTION("Double-quote after attribute name")
+    {
+        scrp::Tokenizer tok("<h a \\\">");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 2);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", ""}, {"\\\"", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::unexpected_character_in_attribute_name);
+    }
+
+    SECTION("Single-quote after attribute name")
+    {
+        scrp::Tokenizer tok("<h a '>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "h", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 2);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", ""}, {"\'", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::unexpected_character_in_attribute_name);
+    }
+
+    SECTION("Empty end tag with following characters")
+    {
+        scrp::Tokenizer tok("a</>bc");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 2);
+
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[0]), "abc");
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[1]));
+
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_end_tag_name);
+
+    }
+
+    SECTION("Empty end tag with following tag")
+    {
+        scrp::Tokenizer tok("a</><b>c");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 4);
+
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[0]), "a");
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), "b", false);
+        CHECK_EMPTY_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]));
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[2]), "c");
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[3]));
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_end_tag_name);
+    }
+
+
+    SECTION("Empty end tag with following comment")
+    {
+        scrp::Tokenizer tok("a</><!--b-->c");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 4);
+
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[0]), "a");
+        CHECK_COMMENT(scrp::Tokenizer::comment_token_cast(tok.tokens()[1]), "b");
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[2]), "c");
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[3]));
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_end_tag_name);
+    }
+
+    SECTION("Empty end tag with following end tag")
+    {
+        scrp::Tokenizer tok("a</></b>c");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 4);
+
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[0]), "a");
+        CHECK_END_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), "b");
+        CHECK_CHARACTER(scrp::Tokenizer::character_token_cast(tok.tokens()[2]), "c");
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[3]));
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_end_tag_name);
+    }
+
+    SECTION("<a \\u000C>")
+    {
+        scrp::Tokenizer tok("<a \u000C>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_EMPTY_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]));
+    }
+
+    SECTION("<a \\u000D>")
+    {
+        scrp::Tokenizer tok("<a \u000D>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_EMPTY_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]));
+    }
+
+    SECTION("<a \\u001F>")
+    {
+        scrp::Tokenizer tok("<a \u001F>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"\u001F", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::control_character_in_input_stream);
+    }
+
+    SECTION("<a (>")
+    {
+        scrp::Tokenizer tok("<a (>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), {{"(", ""}});
+    }
+
+    SECTION("<a ->")
+    {
+        scrp::Tokenizer tok("<a ->");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), {{"-", ""}});
+    }
+
+    SECTION("<a .>")
+    {
+        scrp::Tokenizer tok("<a .>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[1]), {{".", ""}});
+    }
+
+     SECTION("<a />")
+    {
+       scrp::Tokenizer tok("<a />");
+       tok.keep_tokens();
+       tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", true);
+    }
+
+    SECTION("<a 0>")
+    {
+        scrp::Tokenizer tok("<a 0>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"0", ""}});
+
+    }
+
+    SECTION("<a 1>")
+    {
+        scrp::Tokenizer tok("<a 1>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"1", ""}});
+
+    }
+
+    SECTION("<a 2>")
+    {
+        scrp::Tokenizer tok("<a 2>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"2", ""}});
+
+    }
+
+    SECTION("<a <>")
+    {
+        scrp::Tokenizer tok("<a <>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"<", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::unexpected_character_in_attribute_name);
+    }
+
+    SECTION("<a a #>")
+    {
+        scrp::Tokenizer tok("<a a #>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 2);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", ""}, {"#", ""}});
+    }
+
+    SECTION("<a a#>")
+    {
+        scrp::Tokenizer tok("<a a#>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a#", ""}});
+    }
+
+    SECTION("<a a(>")
+    {
+        scrp::Tokenizer tok("<a a(>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a(", ""}});
+    }
+
+    SECTION("<a a->")
+    {
+        scrp::Tokenizer tok("<a a->");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a-", ""}});
+    }
+
+
+    SECTION("<a a'>")
+    {
+        scrp::Tokenizer tok("<a a'>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a'", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::unexpected_character_in_attribute_name);
+    }
+
+    SECTION("<a a.>")
+    {
+        scrp::Tokenizer tok("<a a.>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a.", ""}});
+    }
+
+    SECTION("<a a/>")
+    {
+        scrp::Tokenizer tok("<a a/>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", true);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", ""}});
+    }
+
+    SECTION("<a a0>")
+    {
+        scrp::Tokenizer tok("<a a0>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a0", ""}});
+    }
+
+    SECTION("<a a1>")
+    {
+        scrp::Tokenizer tok("<a a1>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a1", ""}});
+    }
+
+    SECTION("<a a9>")
+    {
+        scrp::Tokenizer tok("<a a9>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a9", ""}});
+    }
+
+    SECTION("<a a&>")
+    {
+        scrp::Tokenizer tok("<a a&>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().empty());
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a&", ""}});
+    }
+
+
+    SECTION("<a a<>")
+    {
+        scrp::Tokenizer tok("<a a<>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a<", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::unexpected_character_in_attribute_name);
+    }
+
+    SECTION("<a a=>")
+    {
+        scrp::Tokenizer tok("<a a=>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::missing_attribute_value);
+    }
+
+    SECTION("<a a=\\u0008>")
+    {
+        scrp::Tokenizer tok("<a a=\u0008>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", "\u0008"}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::control_character_in_input_stream);
+    }
+
+    SECTION("<a/@>")
+    {
+        scrp::Tokenizer tok("<a/@>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"@", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::unexpected_solidus_in_tag);
+    }
+
+    SECTION("<a/A>")
+    {
+        scrp::Tokenizer tok("<a/A>");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_TAG(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), "a", false);
+        CHECK_ATTRIBUTES_SIZE(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), 1);
+        CHECK_ATTRIBUTES(scrp::Tokenizer::tag_token_cast(tok.tokens()[0]), {{"a", ""}});
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::unexpected_solidus_in_tag);
+    }
+
+    SECTION("CR EOF in tag name")
+    {
+        scrp::Tokenizer tok("<z\\r");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]))
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_tag);
+    }
+
+    SECTION("Slash EOF in tag name")
+    {
+        scrp::Tokenizer tok("<z/");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]))
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_tag);
+    }
+
+
+
+    SECTION("EOF in attribute value (single quoted) state")
+    {
+        scrp::Tokenizer tok("<a a ='a");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]))
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_tag);
+    }
+
+    SECTION("EOF in attribute value (double quoted) state")
+    {
+        scrp::Tokenizer tok("<a a =\"a");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]))
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_tag);
+    }
+
+    SECTION("EOF in after attribute value state")
+    {
+        scrp::Tokenizer tok("<a a ='a'");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]))
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_tag);
+    }
+
+    SECTION("EOF in after attribute name state")
+    {
+        scrp::Tokenizer tok("<a a =");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]))
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_tag);
+    }
+
+    SECTION("EOF in attribute name state")
+    {
+        scrp::Tokenizer tok("<a a");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]))
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_tag);
+    }
+
+    SECTION("EOF in before attribute name state")
+    {
+        scrp::Tokenizer tok("<a ");
+        tok.keep_tokens();
+        tok.set_parser(&test_parser);
+
+        REQUIRE(tok.tokenize() == true);
+        REQUIRE(tok.get_parse_errors().size() == 1);
+        REQUIRE(tok.tokens().size() == 1);
+
+        CHECK_EOF(scrp::Tokenizer::eof_token_cast(tok.tokens()[0]))
+
+        CHECK(tok.get_parse_errors()[0].type() == scrp::parser_error_type::eof_in_tag);
+    }
+
+
+
 }

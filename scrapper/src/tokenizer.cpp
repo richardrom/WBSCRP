@@ -78,7 +78,7 @@ namespace scrp
             data { std::move(src) }
         {
             tokens.reserve(5000);
-            errors.reserve(100);
+            errors.reserve(5000);
             attributes.reserve(20);
 
             current_token_data.reserve(64);
@@ -106,16 +106,18 @@ namespace scrp
         parser *parser { nullptr };
         uint32_t numeric_reference { 0 };
         bool keep_tokens { false };
+        bool end_tag { false };
         bool quirk_flag { true }; // only used in the bogus_doctype function and is set to false
                                   // when After DOCTYPE system identifier state triggers the Bogus DOCTYPE state
     };
 } // namespace scrp
 
-scrp::Tokenizer::Tokenizer(sc_string source) :
+scrp::Tokenizer::Tokenizer(scrp::sc_string source) :
     _impl { new Impl(std::move(source)) }
 {
     assert(scrp::is_initialized());
 }
+
 scrp::Tokenizer::~Tokenizer()
 {
     for (auto &_tok : _impl->tokens)
@@ -131,43 +133,39 @@ auto scrp::Tokenizer::release_token(Token *&tok) -> void
 
         case TokenType::Comment:
             {
-                auto *t = static_cast<CommentToken *>(tok);
+                auto *t = dynamic_cast<CommentToken *>(tok);
                 get_token_pool<CommentToken>()->release(t);
             }
             break;
         case TokenType::EndOfFile:
             {
-                auto *t = static_cast<EOFToken *>(tok);
+                auto *t = dynamic_cast<EOFToken *>(tok);
                 get_token_pool<EOFToken>()->release(t);
             }
             break;
         case TokenType::DOCTYPE:
             {
-                auto *t = static_cast<DOCTYPEToken *>(tok);
+                auto *t = dynamic_cast<DOCTYPEToken *>(tok);
                 get_token_pool<DOCTYPEToken>()->release(t);
             }
             break;
         case TokenType::CDATA:
             {
-                auto *t = static_cast<CDATAToken *>(tok);
+                auto *t = dynamic_cast<CDATAToken *>(tok);
                 get_token_pool<CDATAToken>()->release(t);
             }
             break;
         case TokenType::Character:
             {
-                auto *t = static_cast<CharacterToken *>(tok);
+                auto *t = dynamic_cast<CharacterToken *>(tok);
                 get_token_pool<CharacterToken>()->release(t);
             }
             break;
         case TokenType::EndTag:
-            {
-                auto *t = static_cast<EndTagToken *>(tok);
-                get_token_pool<EndTagToken>()->release(t);
-            }
-            break;
+            [[fallthrough]];
         case TokenType::Tag:
             {
-                auto *t = static_cast<TagToken *>(tok);
+                auto *t = dynamic_cast<TagToken *>(tok);
                 get_token_pool<TagToken>()->release(t);
             }
             break;
@@ -601,6 +599,8 @@ auto scrp::Tokenizer::emit_error(parser_error_type type) noexcept -> void
     _impl->errors.emplace_back(type, _impl->current_position, _impl->line_offset, _impl->current_line);
 }
 
+
+
 auto scrp::Tokenizer::emit_token(Token *token) noexcept -> void
 {
     assert(_impl->parser != nullptr);
@@ -617,6 +617,8 @@ auto scrp::Tokenizer::emit_token(Token *token) noexcept -> void
         auto last_tok = dynamic_cast<CharacterToken *>(_impl->tokens.back());
 
         last_tok->code_point += this_tok->code_point;
+
+        release_token(token);
         return;
     }
     else
@@ -629,6 +631,25 @@ auto scrp::Tokenizer::emit_token(Token *token) noexcept -> void
             return;
         }
     }
+
+    if(token->type == TokenType::Tag && _impl->end_tag)
+    {
+        auto this_tok = dynamic_cast<TagToken *>(token);
+
+        this_tok->set_end_tag();
+
+       if (!this_tok->attributes.empty())
+       {
+            emit_error(parser_error_type::end_tag_with_attributes);
+            // Don't pass the attributes to the parser
+            this_tok->attributes.clear();
+       }
+
+       _impl->end_tag = false;
+    }
+    else if( token->type != TokenType::Tag && _impl->end_tag )
+       _impl->end_tag = false;
+
 
     // Consume all not consumed tokens
     for (auto &unconsumed_tokens : _impl->tokens)
@@ -655,6 +676,11 @@ auto scrp::Tokenizer::emit_token(Token *token) noexcept -> void
     }
     else
         release_token(token);
+}
+
+auto scrp::Tokenizer::emit_end_tag_token() -> void
+{
+    _impl->end_tag = true;
 }
 
 auto scrp::Tokenizer::insert_character_to_string(sc_string &name, const sc_string &str) -> void
@@ -2006,8 +2032,11 @@ auto scrp::Tokenizer::end_tag_open(sc_string::iterator &pos, scrp::States &state
 
     if (is_next_char_eof(pos))
     {
-        emit_character_token("<");
-        emit_character_token("/");
+        if (stateChange != States::Data)
+        {
+            emit_character_token("<");
+            emit_character_token("/");
+        }
         emit_eof_token();
     }
 }
@@ -2028,6 +2057,10 @@ auto scrp::Tokenizer::tag_name(sc_string::iterator &pos, scrp::States &stateChan
         case '/':
             stateChange = States::SelfClosingStartTag;
             break;
+        case '>':
+            emit_tag_token(_impl->current_token_data, _impl->attributes);
+            stateChange = States::Data;
+            break;
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
             insert_character_to_string(_impl->current_token_data, encoding::_sv_invalid);
@@ -2038,7 +2071,7 @@ auto scrp::Tokenizer::tag_name(sc_string::iterator &pos, scrp::States &stateChan
             }
     }
 
-    if (is_next_char_eof(pos))
+    if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_tag);
         emit_eof_token();
@@ -2072,6 +2105,7 @@ auto scrp::Tokenizer::before_attribute_name(sc_string::iterator &pos, States &st
             break;
         default:
             _impl->extra_token_data_0.clear();
+            --pos;
             stateChange = States::AttributeName;
     }
 
@@ -2106,7 +2140,6 @@ auto scrp::Tokenizer::attribute_name(sc_string::iterator &pos, States &stateChan
         case 0:
             emit_error(parser_error_type::unexpected_null_character);
             insert_character_to_string(_impl->extra_token_data_0, encoding::_sv_invalid);
-            ;
             break;
         case '\"':
             [[fallthrough]];
@@ -2147,6 +2180,13 @@ auto scrp::Tokenizer::after_attribute_name(sc_string::iterator &pos, States &sta
             stateChange = States::BeforeAttributeValue;
             break;
         case '>':
+            if( !_impl->extra_token_data_0.empty() )
+            {
+                insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
+                _impl->extra_token_data_0.clear();
+                _impl->extra_token_data_1.clear();
+            }
+
             emit_tag_token(_impl->current_token_data, _impl->attributes);
             stateChange = States::Data;
             break;
@@ -2155,10 +2195,11 @@ auto scrp::Tokenizer::after_attribute_name(sc_string::iterator &pos, States &sta
             _impl->extra_token_data_0.clear();
             _impl->extra_token_data_1.clear();
             stateChange = States::AttributeName;
-            --pos; // Reconsume
+            if (!is_next_char_eof(pos))
+                --pos; // Reconsume
     }
 
-    if (is_next_char_eof(pos))
+    if (is_next_char_eof(pos) && stateChange != States::Data )
     {
         emit_error(parser_error_type::eof_in_tag);
         emit_eof_token();
@@ -2186,6 +2227,14 @@ auto scrp::Tokenizer::before_attribute_value(sc_string::iterator &pos, States &s
             break;
         case '>':
             emit_error(parser_error_type::missing_attribute_value);
+
+            if( !_impl->extra_token_data_0.empty() )
+            {
+                insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
+                _impl->extra_token_data_0.clear();
+                _impl->extra_token_data_1.clear();
+            }
+
             emit_tag_token(_impl->current_token_data, _impl->attributes);
             stateChange = States::Data;
             break;
@@ -2260,6 +2309,9 @@ auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States 
         case 0x0C:
             [[fallthrough]];
         case 0x20:
+            insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
+            _impl->extra_token_data_0.clear();
+            _impl->extra_token_data_1.clear();
             stateChange = States::BeforeAttributeName;
             if (!_impl->state.empty() && _impl->state.top() != States::Data)
                 _impl->state.pop();
@@ -2296,7 +2348,7 @@ auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States 
             insert_character_to_string(_impl->extra_token_data_1, *pos);
     }
 
-    if (is_next_char_eof(pos))
+    if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_tag);
         emit_eof_token();
@@ -2305,6 +2357,10 @@ auto scrp::Tokenizer::attribute_value_unquoted(sc_string::iterator &pos, States 
 
 auto scrp::Tokenizer::after_attribute_value_quoted(sc_string::iterator &pos, States &stateChange) -> void
 {
+    insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
+    _impl->extra_token_data_0.clear();
+    _impl->extra_token_data_1.clear();
+
     switch (*pos)
     {
         case 0x09:
@@ -2320,9 +2376,7 @@ auto scrp::Tokenizer::after_attribute_value_quoted(sc_string::iterator &pos, Sta
             stateChange = States::SelfClosingStartTag;
             break;
         case '>':
-            insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
-            _impl->extra_token_data_0.clear();
-            _impl->extra_token_data_1.clear();
+
             emit_tag_token(_impl->current_token_data, _impl->attributes);
             if (!_impl->state.empty() && _impl->state.top() != States::Data)
                 _impl->state.pop();
@@ -2334,7 +2388,7 @@ auto scrp::Tokenizer::after_attribute_value_quoted(sc_string::iterator &pos, Sta
             --pos;
     }
 
-    if (is_next_char_eof(pos))
+    if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_tag);
         emit_eof_token();
@@ -2346,6 +2400,13 @@ auto scrp::Tokenizer::self_closing_start_tag(sc_string::iterator &pos, States &s
     switch (*pos)
     {
         case '>':
+            if( !_impl->extra_token_data_0.empty() )
+            {
+                insert_attribute(_impl->extra_token_data_0, _impl->extra_token_data_1);
+                _impl->extra_token_data_0.clear();
+                _impl->extra_token_data_1.clear();
+            }
+
             emit_tag_token(_impl->current_token_data, _impl->attributes, true);
             if (!_impl->state.empty() && _impl->state.top() != States::Data)
                 _impl->state.pop();
@@ -2357,7 +2418,7 @@ auto scrp::Tokenizer::self_closing_start_tag(sc_string::iterator &pos, States &s
             --pos;
     }
 
-    if (is_next_char_eof(pos))
+    if (is_next_char_eof(pos) && stateChange != States::Data)
     {
         emit_error(parser_error_type::eof_in_tag);
         emit_eof_token();
